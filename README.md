@@ -1,11 +1,12 @@
 # RYB-team-8-2025-Code
-TODOS:
--change entire display ui of slaves
+## TODOS:
 
--fix the outside screen boundry issue with some clever logic
+- change entire display ui of slaves
 
--implement a viable test decision making algorithm
+- fix the outside screen boundry issue with some clever logic
 
--Emergency stop button on every submodule if something goes wrong
+- implement a viable test decision making algorithm
 
--
+- Emergency stop button on every submodule if something goes wrong
+
+
