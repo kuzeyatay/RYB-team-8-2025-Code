@@ -167,10 +167,11 @@ int main(void){
       // ignore 'A', 'R', or anything else; motor never replies
     }
 
-    sleep_msec(10);
+    sleep_msec(20);
   }
 
   display_destroy(&disp);
   pynq_destroy();
   return 0;
 }
+
