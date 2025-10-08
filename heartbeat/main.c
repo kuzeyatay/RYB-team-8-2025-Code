@@ -13,8 +13,6 @@
 #define TIMEOUT 20
 #define MAX_PAY 5 // need this so the variable is global
 
-
-// --------- itoa_u (no sprintf) ----------
 static void itoa_u(unsigned v, char *out){
   char tmp[16]; int n=0;
   if(!v){ out[0]='0'; out[1]=0; return; }
@@ -23,7 +21,7 @@ static void itoa_u(unsigned v, char *out){
   out[n]=0;
 }
 
-// --------- display helpers ----------
+
 static inline int clampi(int v,int lo,int hi){ if(v<lo) return lo; if(v>hi) return hi; return v; }
 static void clear_line(display_t *d, int y, int h, uint16_t bg){
   int x1=0, y1=y-h+2, x2=DISPLAY_WIDTH-1, y2=y+2;
@@ -69,24 +67,16 @@ void send_message(uint8_t dst, uint8_t src, const uint8_t payload[], uint8_t len
 #define send_message(dst, src, payload) \
     send_message(dst, src, payload, (uint8_t)sizeof(payload)) //helper macro  c doesnt have overloading i hate this
 
-/* ============================================================
-   Central RX function (like your example), but adapted for a SLAVE:
-   - Forwards frames not addressed to HRTBT (addr=1)
-   - When a frame is for HRTBT, stores parsed fields in module-static
-     vars and returns payload length (>0). Returns 0 if forwarded,
-     -1.. on timeouts/errors.
-   ============================================================ */
 
-// Parsed output (module-static so main() can read without pointers)
 static uint8_t g_src = 0;
 static uint8_t g_len = 0;
 static uint8_t g_payload[MAX_PAY];
 
-static int receive_message(void)
+static int receive_message(void) // called periodically
 {
   int b;
 
-  // --- header ---
+ 
   b = receive_byte();
   if (b < 0) return -1;
   uint8_t dst = (uint8_t)b;
@@ -99,7 +89,7 @@ static int receive_message(void)
   if (b < 0) return -1;
   uint8_t len = (uint8_t)b;
 
-  // --- ring forwarding if not for me ---
+  //ring forwarding if not for me 
   if (dst != HRTBT) {
     uart_send(UART_CH, dst);
     uart_send(UART_CH, src);
@@ -112,7 +102,7 @@ static int receive_message(void)
     return 0; // forwarded
   }
 
-  // --- payload for me ---
+  // payload for me
   
   for (int i = 0; i < len; i++) {
     b = receive_byte();
@@ -156,7 +146,7 @@ int main(void){
     int r = receive_message();
     if (r <= 0) continue; // forwarded or timeout/error
 
-    // We have: g_src (usually MSTR), g_payload[0..g_len-1]
+    // We have: g_src (MSTR), g_payload[0..g_len-1]
     if (g_len >= 1) {
       uint8_t cmd = g_payload[0];
 
@@ -181,9 +171,8 @@ int main(void){
 
       } else if (cmd == 'H') {
         // Compute/return BPM 60..240 (demo ramp)
-        bpm = 60 + ((bpm + 7) % 181); // cycles 60..240
-        uint8_t b = (bpm > 254) ? 254 : bpm;
-        uint8_t rsp[] = { 'H', b };
+        bpm = 80; //CHANGE ME
+        uint8_t rsp[] = { 'H', bpm };
         send_message(MSTR, HRTBT, rsp);
 
         // Display it
@@ -195,9 +184,11 @@ int main(void){
       }
       // else: ignore unknown
     }
+    sleep_msec(20); // ~50 Hz
   }
 
   display_destroy(&disp);
   pynq_destroy();
   return 0;
 }
+
