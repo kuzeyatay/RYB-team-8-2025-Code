@@ -19,7 +19,7 @@
 // global display so Ctrl+C handler can cleanly clear it
 static display_t g_disp;
 
-// ---- tiny itoa (no sprintf) ----
+
 static void itoa_u(unsigned v, char *out){
   char tmp[16]; int n=0;
   if(!v){ out[0]='0'; out[1]=0; return; }
@@ -28,7 +28,7 @@ static void itoa_u(unsigned v, char *out){
   out[n]=0;
 }
 
-// ---- display helpers ----
+
 static inline int clampi(int v,int lo,int hi){ if(v<lo) return lo; if(v>hi) return hi; return v; }
 static void clear_line(display_t *d, int y, int h, uint16_t bg){
   int x1=0, y1=y-h+2, x2=DISPLAY_WIDTH-1, y2=y+2;
@@ -41,7 +41,7 @@ static void draw_line(display_t *d, FontxFile *fx, int x, int y, const char *s, 
   displayDrawString(d, fx, x, y, (uint8_t*)s, col);
 }
 
-// ---- Ctrl+C clean exit ----
+
 static void handle_sigint(int sig __attribute__((unused))){
   displayFillScreen(&g_disp, RGB_BLACK);
   printf("\n Exited\n");
@@ -50,11 +50,6 @@ static void handle_sigint(int sig __attribute__((unused))){
   exit(0);
 }
 
-// ---- UART helpers ----
-static void sleep_msec(int ms){
-  struct timespec ts; ts.tv_sec = ms/1000; ts.tv_nsec = (ms%1000)*1000000L;
-  nanosleep(&ts, NULL);
-}
 
 static int timeouted_byte(int ms) {
   int waited = 0;
@@ -77,7 +72,7 @@ static void send_message(uint8_t dst, uint8_t src, const uint8_t payload[], uint
 #define send_message(dst, src, payload) \
   send_message(dst, src, payload, (uint8_t)sizeof(payload))
 
-// ---- parsed frame globals ----
+
 static uint8_t g_src = 0;
 static uint8_t g_len = 0;
 static uint8_t g_payload[MAX_PAY];
