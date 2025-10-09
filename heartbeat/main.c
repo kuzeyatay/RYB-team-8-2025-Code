@@ -179,7 +179,7 @@ int main(void){
         clear_line(&disp, y_val, fh, RGB_BLACK);
         char buf[32], num[16];
         strcpy(buf, "BPM=");
-        itoa_u(b, num); strcat(buf, num);
+        itoa_u(bpm, num); strcat(buf, num);
         draw_line(&disp, fx, x, y_val, buf, RGB_WHITE);
       }
       // else: ignore unknown
