@@ -3,6 +3,8 @@
 
 - fix the heartbeat module sign off issue.
 
+- Fix motor ping not working(?)
+
 - change entire display ui of slaves (if we want to win the prize ig)
 
 - fix the outside screen boundry issue with some clever logic (maybe)
