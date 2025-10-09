@@ -1,7 +1,7 @@
 # RYB-team-8-2025-Code
 ## TODOS:
 
--fix the heartbeat module sign off issue.
+- fix the heartbeat module sign off issue.
 
 - change entire display ui of slaves
 
