@@ -1,4 +1,4 @@
-// heartbeat.c  — Address 1 (HEARTBEAT)
+// crying.c  — Address 2 (CRYING)
 #include <libpynq.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -10,16 +10,16 @@
 
 #define UART_CH UART0
 #define MSTR   0
-#define HRTBT  1  // this module
-#define CRY    2
+#define HRTBT  1
+#define CRY    2  // this module
 #define MTR    3
 #define TIMEOUT 20
 #define MAX_PAY 5
 
-// global display so Ctrl+C handler can cleanly clear it
+// global display so handler can access it
 static display_t g_disp;
 
-
+// -------- itoa_u (no sprintf) ----------
 static void itoa_u(unsigned v, char *out){
   char tmp[16]; int n=0;
   if(!v){ out[0]='0'; out[1]=0; return; }
@@ -28,7 +28,7 @@ static void itoa_u(unsigned v, char *out){
   out[n]=0;
 }
 
-
+// -------- display helpers ----------
 static inline int clampi(int v,int lo,int hi){ if(v<lo) return lo; if(v>hi) return hi; return v; }
 static void clear_line(display_t *d, int y, int h, uint16_t bg){
   int x1=0, y1=y-h+2, x2=DISPLAY_WIDTH-1, y2=y+2;
@@ -41,7 +41,7 @@ static void draw_line(display_t *d, FontxFile *fx, int x, int y, const char *s, 
   displayDrawString(d, fx, x, y, (uint8_t*)s, col);
 }
 
-
+// -------- safe exit on Ctrl+C ----------
 static void handle_sigint(int sig __attribute__((unused))){
   displayFillScreen(&g_disp, RGB_BLACK);
   printf("\n Exited\n");
@@ -50,7 +50,7 @@ static void handle_sigint(int sig __attribute__((unused))){
   exit(0);
 }
 
-
+// -------- uart I/O ----------
 static int timeouted_byte(int ms) {
   int waited = 0;
   while (waited < ms) {
@@ -62,7 +62,7 @@ static int timeouted_byte(int ms) {
 }
 static int receive_byte(void) { return timeouted_byte(TIMEOUT); }
 
-// [DST][SRC][LEN][PAYLOAD]
+// [DST][SRC][LEN][PAYLOAD...]
 static void send_message(uint8_t dst, uint8_t src, const uint8_t payload[], uint8_t len){
   uart_send(UART_CH, dst);
   uart_send(UART_CH, src);
@@ -72,7 +72,7 @@ static void send_message(uint8_t dst, uint8_t src, const uint8_t payload[], uint
 #define send_message(dst, src, payload) \
   send_message(dst, src, payload, (uint8_t)sizeof(payload))
 
-
+// -------- globals for parsed message ----------
 static uint8_t g_src = 0;
 static uint8_t g_len = 0;
 static uint8_t g_payload[MAX_PAY];
@@ -89,7 +89,7 @@ static int receive_message(void){
   b = receive_byte(); if (b < 0) return -1;
   uint8_t len = (uint8_t)b;
 
-  if (dst != HRTBT) {
+  if (dst != CRY) {
     uart_send(UART_CH, dst);
     uart_send(UART_CH, src);
     uart_send(UART_CH, len);
@@ -112,17 +112,14 @@ static int receive_message(void){
 }
 
 int main(void){
-  // hook Ctrl+C
-  signal(SIGINT, handle_sigint);
+  signal(SIGINT, handle_sigint); // make Ctrl+C clean the display
 
-  // IO init
   pynq_init();
   uart_init(UART_CH);
   uart_reset_fifos(UART_CH);
   switchbox_set_pin(IO_AR0, SWB_UART0_RX);
   switchbox_set_pin(IO_AR1, SWB_UART0_TX);
 
-  // display init (global g_disp so handler can clear it)
   display_init(&g_disp);
   display_set_flip(&g_disp, true, true);
   displayFillScreen(&g_disp, RGB_BLACK);
@@ -133,11 +130,11 @@ int main(void){
   displaySetFontDirection(&g_disp, TEXT_DIRECTION0);
 
   int x=6, y=fh*1;
-  draw_line(&g_disp, fx, x, y, "HEARTBEAT MODULE", RGB_GREEN); y+=fh;
-  draw_line(&g_disp, fx, x, y, "Waiting for 'H'/'A'/'R'...", RGB_WHITE); y+=fh;
+  draw_line(&g_disp, fx, x, y, "CRYING MODULE", RGB_GREEN); y+=fh;
+  draw_line(&g_disp, fx, x, y, "Waiting for 'C'/'A'/'R'...", RGB_WHITE); y+=fh;
   int y_val = y; y+=fh;
 
-  uint8_t bpm = 90;
+  uint8_t cry = 0;
   uint32_t tick = 0;
 
   while (1) {
@@ -149,13 +146,13 @@ int main(void){
 
       if (cmd == 'A') {
         uint8_t rsp[] = { 'A' };
-        send_message(MSTR, HRTBT, rsp);
+        send_message(MSTR, CRY, rsp);
 
       } else if (cmd == 'R') {
-        uint8_t v = (uint8_t)((tick*73u + 41u) & 0xFFu);
+        uint8_t v = (uint8_t)((tick*97u + 13u) & 0xFFu);
         tick++;
         uint8_t rsp[] = { 'R', v };
-        send_message(MSTR, HRTBT, rsp);
+        send_message(MSTR, CRY, rsp);
 
         clear_line(&g_disp, y_val, fh, RGB_BLACK);
         char buf[32], num[16];
@@ -163,16 +160,15 @@ int main(void){
         itoa_u(v, num); strcat(buf, num);
         draw_line(&g_disp, fx, x, y_val, buf, RGB_YELLOW);
 
-      } else if (cmd == 'H') {
-        // demo: set bpm (replace with real reading if you have it)
-        bpm = 80;
-        uint8_t rsp[] = { 'H', bpm };
-        send_message(MSTR, HRTBT, rsp);
+      } else if (cmd == 'C') {
+        cry = (uint8_t)((cry + 7) % 101);
+        uint8_t rsp[] = { 'C', cry };
+        send_message(MSTR, CRY, rsp);
 
         clear_line(&g_disp, y_val, fh, RGB_BLACK);
         char buf[32], num[16];
-        strcpy(buf, "BPM=");
-        itoa_u(bpm, num); strcat(buf, num);
+        strcpy(buf, "PCT=");
+        itoa_u(cry, num); strcat(buf, num); strcat(buf, "%");
         draw_line(&g_disp, fx, x, y_val, buf, RGB_WHITE);
       }
     }
