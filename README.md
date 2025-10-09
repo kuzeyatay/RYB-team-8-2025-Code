@@ -3,12 +3,12 @@
 
 - fix the heartbeat module sign off issue.
 
-- change entire display ui of slaves
+- change entire display ui of slaves (if we want to win the prize ig)
 
-- fix the outside screen boundry issue with some clever logic
+- fix the outside screen boundry issue with some clever logic (maybe)
 
 - implement a viable test decision making algorithm
 
-- Emergency stop button on every submodule if something goes wrong
+- Emergency stop button on every submodule if something goes wrong(especially the motor one)
 
 
