@@ -349,7 +349,7 @@ int main(void)
         /*
         our workspace
         */
-        cry = (uint8_t)((cry + 7) % 101); // CHANGE ME
+        //cry = (uint8_t)((cry + 7) % 101); // CHANGE ME
         uint8_t rsp[] = {'C', cry};
         send_message(MSTR, CRY, rsp);
       }
