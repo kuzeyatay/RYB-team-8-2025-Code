@@ -13,4 +13,6 @@
 
 - Emergency stop button on every submodule if something goes wrong(especially the motor one)
 
+- fix the jittery display
+
 
