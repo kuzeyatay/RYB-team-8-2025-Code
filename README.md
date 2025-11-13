@@ -11,6 +11,8 @@
 
 - not improved logic to diagonal jump
 
+- improve wait on crying level
+
 - fix the outside screen boundry issue with some clever logic (maybe)
 
 - implement a viable test decision making algorithm
