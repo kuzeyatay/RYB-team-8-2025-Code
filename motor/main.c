@@ -17,6 +17,9 @@
 #define TIMEOUT 20
 #define MAX_PAY 8
 
+#define AMP_CH 0
+#define FREQ_CH 1 // example, this is how its probably going to look like in production
+
 // --- tiny itoa (no sprintf) ---
 static void itoa_u(unsigned v, char *out){
   char tmp[16]; int n=0;
@@ -97,6 +100,90 @@ static int receive_message(void){
   return g_len;
 }
 
+// MOTOR
+//  Map an input percentage (0..100) to region index 1..5
+int to_region(int percent)
+{
+    if (percent < 10)
+        return 1; // [0,10)
+    if (percent < 30)
+        return 2; // [10,30)
+    if (percent < 50)
+        return 3; // [30,50)
+    if (percent < 70)
+        return 4; // [50,70)
+    return 5;     // [70,100]
+}
+
+// Return the safe *midpoint* duty (%) for region 1..5
+int region_mid_duty(int r)
+{
+    switch (r)
+    {
+    case 1:
+        return 5; // 0–10%  -> mid 5%
+    case 2:
+        return 20; // 10–30% -> mid 20%
+    case 3:
+        return 40; // 30–50% -> mid 40%
+    case 4:
+        return 60; // 50–70% -> mid 60%
+    case 5:
+        return 80; // 70–90% -> mid 80%
+    default:
+        return 5;
+    }
+}
+
+// Stub: set PWM duty in percent on the hardware/channel
+void set_pwm_percent(int channel, int percent)
+{
+    (void)channel;
+    if (percent > 90)
+    {
+        printf("[EMERGENCY]");
+        exit(1);
+    }
+    // never exceed 90% (emergency)
+}
+
+// amp, freq are percentages (0-100).
+// Any value inside an interval maps to that (A,F) cell.
+// We "command" the cradle logically via move_to_cell(A-1, F-1).
+// aIndex, fIndex are 0-4 (matrix indices)
+void command_motor(int aIndex, int fIndex)
+{
+    // safety
+    if (aIndex < 0 || aIndex > 4 || fIndex < 0 || fIndex > 4)
+    {
+        printf("[SYSTEM][ERROR] command_motor out-of-bounds A%d F%d\n",
+               aIndex + 1, fIndex + 1);
+        return;
+    }
+
+    // if you still want PWM mapping based on A/F levels:
+    int dutyA = region_mid_duty(aIndex + 1); // 1..5
+    int dutyF = region_mid_duty(fIndex + 1); // 1..5
+
+    set_pwm_percent(AMP_CH, dutyA);
+    set_pwm_percent(FREQ_CH, dutyF);
+
+    switchbox_set_pin(IO_AR0, PWM0); //Set PWM0 to arduino pin 0
+    pwm_init(PWM0,100000); //give it a period of 100000 *10* 10e-9 seconds.
+    pwm_set_duty_cycle(PWM0,100000*0.01*dutyA); //give it a duration of %duty cycle in %
+    pwm_destroy(PWM0);//destroy PWM
+
+    switchbox_set_pin(IO_AR0, PWM1); //Set PWM0 to arduino pin 0
+    pwm_init(PWM1,100000); //give it a period of 100000 *10* 10e-9 seconds.
+    pwm_set_duty_cycle(PWM1,100000*0.01*dutyF); //give it a duration of %duty cycle in %
+    pwm_destroy(PWM1);//destroy PWM
+
+
+
+}
+
+
+
 int main(void){
   // IO init
   pynq_init();
@@ -149,6 +236,7 @@ int main(void){
         freq = g_payload[2];           
 
         // here you'd drive the actual motor using amp/freq
+        command_motor(amp,freq);
 
         // refresh display
         clear_line(&disp, y_amp,  fh, RGB_BLACK);
@@ -174,4 +262,3 @@ int main(void){
   pynq_destroy();
   return 0;
 }
-
