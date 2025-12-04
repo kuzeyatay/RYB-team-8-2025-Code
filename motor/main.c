@@ -8,6 +8,9 @@
 #include <stdbool.h>
 #include <time.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <buttons.h>   // <-- adjust include if needed
 
 #define UART_CH UART0
 #define MSTR   0
@@ -17,8 +20,21 @@
 #define TIMEOUT 20
 #define MAX_PAY 8
 
-#define AMP_CH 0
-#define FREQ_CH 1 // example, this is how its probably going to look like in production
+// Logical channels for safety checks (no HW meaning here)
+#define AMP_CH   0
+#define FREQ_CH  1
+
+// *** SET THESE TO THE REAL PINS DRIVING THE CRADLE HARDWARE ***
+#define AMP_PWM_PIN   IO_AR2      // amplitude PWM output pin
+#define FREQ_PWM_PIN  IO_AR3      // frequency PWM output pin
+
+// PWM block identifiers
+#define AMP_PWM       PWM0        // amplitude PWM block
+#define FREQ_PWM      PWM1        // frequency PWM block
+
+// Switchbox configuration values (this is what switchbox_set_pin expects)
+#define AMP_PWM_CFG   SWB_PWM0
+#define FREQ_PWM_CFG  SWB_PWM1
 
 // --- tiny itoa (no sprintf) ---
 static void itoa_u(unsigned v, char *out){
@@ -31,6 +47,7 @@ static void itoa_u(unsigned v, char *out){
 
 // --- display helpers ---
 static inline int clampi(int v,int lo,int hi){ if(v<lo) return lo; if(v>hi) return hi; return v; }
+
 static void clear_line(display_t *d, int y, int h, uint16_t bg){
   int x1=0, y1=y-h+2, x2=DISPLAY_WIDTH-1, y2=y+2;
   x1=clampi(x1,0,DISPLAY_WIDTH-1); x2=clampi(x2,0,DISPLAY_WIDTH-1);
@@ -38,6 +55,7 @@ static void clear_line(display_t *d, int y, int h, uint16_t bg){
   if(x2<x1 || y2<y1) return;
   displayDrawFillRect(d, x1,y1,x2,y2,bg);
 }
+
 static void draw_line(display_t *d, FontxFile *fx, int x, int y, const char *s, uint16_t col){
   displayDrawString(d, fx, x, y, (uint8_t*)s, col);
 }
@@ -54,8 +72,8 @@ static int timeouted_byte(int ms) {
   }
   return -1;
 }
-static int receive_byte(void) { return timeouted_byte(TIMEOUT); }
 
+static int receive_byte(void) { return timeouted_byte(TIMEOUT); }
 
 // --- parsed frame globals (filled by receive_message) ---
 static uint8_t g_src = 0;
@@ -100,97 +118,85 @@ static int receive_message(void){
   return g_len;
 }
 
-// MOTOR
-//  Map an input percentage (0..100) to region index 1..5
-int to_region(int percent)
+// Return the safe midpoint duty (%) for region 1..5
+// Regions are:
+//   1 -> ~ 0–10%  (mid 5)
+//   2 -> ~10–30%  (mid 20)
+//   3 -> ~30–50%  (mid 40)
+//   4 -> ~50–70%  (mid 60)
+//   5 -> ~70–90%  (mid 80)
+static int region_mid_duty(int r)
 {
-    if (percent < 10)
-        return 1; // [0,10)
-    if (percent < 30)
-        return 2; // [10,30)
-    if (percent < 50)
-        return 3; // [30,50)
-    if (percent < 70)
-        return 4; // [50,70)
-    return 5;     // [70,100]
+  switch (r) {
+    case 1: return 5;   // 0–10%  -> mid 5%
+    case 2: return 20;  // 10–30% -> mid 20%
+    case 3: return 40;  // 30–50% -> mid 40%
+    case 4: return 60;  // 50–70% -> mid 60%
+    case 5: return 80;  // 70–90% -> mid 80%
+    default: return 5;
+  }
 }
 
-// Return the safe *midpoint* duty (%) for region 1..5
-int region_mid_duty(int r)
+// Safety check for duty cycle in percent
+static void set_pwm_percent(int channel, int percent)
 {
-    switch (r)
-    {
-    case 1:
-        return 5; // 0–10%  -> mid 5%
-    case 2:
-        return 20; // 10–30% -> mid 20%
-    case 3:
-        return 40; // 30–50% -> mid 40%
-    case 4:
-        return 60; // 50–70% -> mid 60%
-    case 5:
-        return 80; // 70–90% -> mid 80%
-    default:
-        return 5;
-    }
+  (void)channel; // channel kept for future extension
+
+  if (percent > 90) {
+    printf("[EMERGENCY] duty=%d%% > 90%%\n", percent);
+    exit(1); // never allow >90%
+  }
 }
 
-// Stub: set PWM duty in percent on the hardware/channel
-void set_pwm_percent(int channel, int percent)
+// amp_index, freq_index are 0..4 (matrix indices for A/F)
+// We map index 0..4 -> region 1..5 -> duty midpoints.
+static void command_motor(int amp_index, int freq_index)
 {
-    (void)channel;
-    if (percent > 90)
-    {
-        printf("[EMERGENCY]");
-        exit(1);
-    }
-    // never exceed 90% (emergency)
+  // safety: indices must be 0..4
+  if (amp_index < 0 || amp_index > 4 || freq_index < 0 || freq_index > 4) {
+    printf("[SYSTEM][ERROR] command_motor out-of-bounds A%d F%d\n",
+           amp_index + 1, freq_index + 1);
+    return;
+  }
+
+  int a_region = amp_index + 1;   // 1..5
+  int f_region = freq_index + 1;  // 1..5
+
+  int dutyA = region_mid_duty(a_region);   // percentage
+  int dutyF = region_mid_duty(f_region);   // percentage
+
+  // global duty safety
+  set_pwm_percent(AMP_CH,  dutyA);
+  set_pwm_percent(FREQ_CH, dutyF);
+
+  // 1 kHz PWM: period = 100000 steps @ 10 ns base
+  uint32_t period = 100000;
+
+  pwm_set_duty_cycle(AMP_PWM,  (uint32_t)(period * dutyA  / 100));
+  pwm_set_duty_cycle(FREQ_PWM, (uint32_t)(period * dutyF  / 100));
 }
-
-// amp, freq are percentages (0-100).
-// Any value inside an interval maps to that (A,F) cell.
-// We "command" the cradle logically via move_to_cell(A-1, F-1).
-// aIndex, fIndex are 0-4 (matrix indices)
-void command_motor(int aIndex, int fIndex)
-{
-    // safety
-    if (aIndex < 0 || aIndex > 4 || fIndex < 0 || fIndex > 4)
-    {
-        printf("[SYSTEM][ERROR] command_motor out-of-bounds A%d F%d\n",
-               aIndex + 1, fIndex + 1);
-        return;
-    }
-
-    // if you still want PWM mapping based on A/F levels:
-    int dutyA = region_mid_duty(aIndex + 1); // 1..5
-    int dutyF = region_mid_duty(fIndex + 1); // 1..5
-
-    set_pwm_percent(AMP_CH, dutyA);
-    set_pwm_percent(FREQ_CH, dutyF);
-
-    switchbox_set_pin(IO_AR0, PWM0); //Set PWM0 to arduino pin 0
-    pwm_init(PWM0,100000); //give it a period of 100000 *10* 10e-9 seconds.
-    pwm_set_duty_cycle(PWM0,100000*0.01*dutyA); //give it a duration of %duty cycle in %
-    pwm_destroy(PWM0);//destroy PWM
-
-    switchbox_set_pin(IO_AR0, PWM1); //Set PWM0 to arduino pin 0
-    pwm_init(PWM1,100000); //give it a period of 100000 *10* 10e-9 seconds.
-    pwm_set_duty_cycle(PWM1,100000*0.01*dutyF); //give it a duration of %duty cycle in %
-    pwm_destroy(PWM1);//destroy PWM
-
-
-
-}
-
-
 
 int main(void){
-  // IO init
+  // IO + UART init
   pynq_init();
   uart_init(UART_CH);
   uart_reset_fifos(UART_CH);
+
+  // UART pins (do NOT reuse these for PWM)
   switchbox_set_pin(IO_AR0, SWB_UART0_RX);
   switchbox_set_pin(IO_AR1, SWB_UART0_TX);
+
+  // PWM outputs – map to cradle driver pins
+  switchbox_set_pin(AMP_PWM_PIN,  AMP_PWM_CFG);
+  switchbox_set_pin(FREQ_PWM_PIN, FREQ_PWM_CFG);
+
+  // 1 kHz PWM: period = 100000 * 10 ns = 1 ms
+  pwm_init(AMP_PWM,  100000);
+  pwm_init(FREQ_PWM, 100000);
+
+  // Buttons init
+  buttons_init();          // from buttons library
+  
 
   // display init
   display_t disp; display_init(&disp);
@@ -204,60 +210,93 @@ int main(void){
 
   int x = 6, y = fh*1;
   draw_line(&disp, fx, x, y, "MOTOR MODULE", RGB_GREEN); y += fh;
-  draw_line(&disp, fx, x, y, "Waiting for 'M' (amp,freq)...", RGB_WHITE); y += fh;
+  draw_line(&disp, fx, x, y, "Waiting for 'M' (Aidx,Fidx)...", RGB_WHITE); y += fh;
   int y_amp = y; y += fh;
   int y_freq = y; y += fh;
 
-  uint8_t amp = 0;
-  uint8_t freq = 0;
+  uint8_t amp_idx  = 0;   // 0..4
+  uint8_t freq_idx = 0;   // 0..4
 
   // initial display
   {
     char buf[32], num[16];
-    strcpy(buf, "AMP=");
-    itoa_u(amp, num); strcat(buf, num);
+    strcpy(buf, "A_IDX=");
+    itoa_u(amp_idx, num); strcat(buf, num);
     draw_line(&disp, fx, x, y_amp, buf, RGB_YELLOW);
 
-    strcpy(buf, "FREQ=");
-    itoa_u(freq, num); strcat(buf, num);
+    strcpy(buf, "F_IDX=");
+    itoa_u(freq_idx, num); strcat(buf, num);
     draw_line(&disp, fx, x, y_freq, buf, RGB_YELLOW);
   }
+  
+  int prev_b0 = 0;
 
   while (1) {
+    // --- 1) Handle UART messages from master ---
     int r = receive_message();
-    if (r <= 0) { sleep_msec(2); continue; }
-
-    if (g_len >= 1) {
+    if (r > 0 && g_len >= 1) {
       uint8_t cmd = g_payload[0];
 
       if (cmd == 'M' && g_len >= 3) {
-        // update outputs from payload
-        amp  = g_payload[1];          
-        freq = g_payload[2];           
+        // payload[1], payload[2] are indices 0..4
+        amp_idx  = g_payload[1];
+        freq_idx = g_payload[2];
 
-        // here you'd drive the actual motor using amp/freq
-        command_motor(amp,freq);
+        // clamp just in case master misbehaves
+        if (amp_idx  > 4) amp_idx  = 4;
+        if (freq_idx > 4) freq_idx = 4;
+
+        command_motor((int)amp_idx, (int)freq_idx);
 
         // refresh display
         clear_line(&disp, y_amp,  fh, RGB_BLACK);
         clear_line(&disp, y_freq, fh, RGB_BLACK);
 
         char buf[32], num[16];
-        strcpy(buf, "AMP=");
-        itoa_u(amp, num); strcat(buf, num);
+        strcpy(buf, "A_IDX=");
+        itoa_u(amp_idx, num); strcat(buf, num);
         draw_line(&disp, fx, x, y_amp, buf, RGB_WHITE);
 
-        strcpy(buf, "FREQ=");
-        itoa_u(freq, num); strcat(buf, num);
+        strcpy(buf, "F_IDX=");
+        itoa_u(freq_idx, num); strcat(buf, num);
         draw_line(&disp, fx, x, y_freq, buf, RGB_WHITE);
       }
 
       // ignore 'A', 'R', or anything else; motor never replies
     }
 
+    // --- 2) Handle button override: Button1 forces A=4, F=4 ---
+    int b0 = get_button_state(0);
+
+    // Rising edge on BUTTON1
+    if ( b0 && !prev_b0 ) {
+      amp_idx  = 4;
+      freq_idx = 4;
+
+      command_motor(4, 4);   // index 4 -> region 5
+
+      // update display to show override
+      clear_line(&disp, y_amp,  fh, RGB_BLACK);
+      clear_line(&disp, y_freq, fh, RGB_BLACK);
+
+      char buf[32], num[16];
+      strcpy(buf, "A_IDX=");
+      itoa_u(amp_idx, num); strcat(buf, num);
+      draw_line(&disp, fx, x, y_amp, buf, RGB_WHITE);
+
+      strcpy(buf, "F_IDX=");
+      itoa_u(freq_idx, num); strcat(buf, num);
+      draw_line(&disp, fx, x, y_freq, buf, RGB_WHITE);
+    }
+
+     prev_b0 = b0;
+
     sleep_msec(20);
   }
 
+  // (Normally unreachable, but for completeness)
+  pwm_destroy(AMP_PWM);
+  pwm_destroy(FREQ_PWM);
   display_destroy(&disp);
   pynq_destroy();
   return 0;
