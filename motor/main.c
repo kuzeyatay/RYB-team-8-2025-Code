@@ -36,6 +36,10 @@
 #define AMP_PWM_CFG   SWB_PWM0
 #define FREQ_PWM_CFG  SWB_PWM1
 
+// --- globals for font size (used to safely clip text on screen) ---
+static uint8_t g_fw = 8;  // font width (set in main after GetFontx)
+static uint8_t g_fh = 16; // font height (set in main after GetFontx)
+
 // --- tiny itoa (no sprintf) ---
 static void itoa_u(unsigned v, char *out){
   char tmp[16]; int n=0;
@@ -56,8 +60,29 @@ static void clear_line(display_t *d, int y, int h, uint16_t bg){
   displayDrawFillRect(d, x1,y1,x2,y2,bg);
 }
 
+// Safe draw_line: truncates string so it never goes off-screen.
 static void draw_line(display_t *d, FontxFile *fx, int x, int y, const char *s, uint16_t col){
-  displayDrawString(d, fx, x, y, (uint8_t*)s, col);
+  char buf[64];
+
+  // Use global font width; fall back to 8 if not set yet.
+  int fw = (g_fw == 0) ? 8 : g_fw;
+
+  // How many characters fit from x to the right edge
+  int max_chars = (DISPLAY_WIDTH - x) / fw;
+  if (max_chars <= 0) return; // nothing fits on this line
+
+  if (max_chars > (int)(sizeof(buf) - 1)) {
+    max_chars = sizeof(buf) - 1;
+  }
+
+  int n = 0;
+  while (n < max_chars && s[n] != '\0') {
+    buf[n] = s[n];
+    n++;
+  }
+  buf[n] = '\0';
+
+  displayDrawString(d, fx, x, y, (uint8_t*)buf, col);
 }
 
 // --- UART helpers ---
@@ -196,7 +221,6 @@ int main(void){
 
   // Buttons init
   buttons_init();          // from buttons library
-  
 
   // display init
   display_t disp; display_init(&disp);
@@ -206,11 +230,14 @@ int main(void){
   uint8_t glyph[FontxGlyphBufSize], fw, fh;
   InitFontx(fx, "/boot/ILGH16XB.FNT", "");
   GetFontx(fx, 0, glyph, &fw, &fh);
+  g_fw = fw;   // store globally so draw_line can clip safely
+  g_fh = fh;
   displaySetFontDirection(&disp, TEXT_DIRECTION0);
 
   int x = 6, y = fh*1;
   draw_line(&disp, fx, x, y, "MOTOR MODULE", RGB_GREEN); y += fh;
-  draw_line(&disp, fx, x, y, "Waiting for 'M' (Aidx,Fidx)...", RGB_WHITE); y += fh;
+  // Shortened message so it fits more easily; draw_line also clips if needed
+  draw_line(&disp, fx, x, y, "Waiting for 'M' (A,F)...", RGB_WHITE); y += fh;
   int y_amp = y; y += fh;
   int y_freq = y; y += fh;
 
@@ -228,8 +255,9 @@ int main(void){
     itoa_u(freq_idx, num); strcat(buf, num);
     draw_line(&disp, fx, x, y_freq, buf, RGB_YELLOW);
   }
-  
+
   int prev_b0 = 0;
+  int prev_b1 = 0;
 
   while (1) {
     // --- 1) Handle UART messages from master ---
@@ -265,10 +293,10 @@ int main(void){
       // ignore 'A', 'R', or anything else; motor never replies
     }
 
-    // --- 2) Handle button override: Button1 forces A=4, F=4 ---
+    // --- 2) Handle button override: Button0 forces A=4, F=4 ---
     int b0 = get_button_state(0);
 
-    // Rising edge on BUTTON1
+    // Rising edge on BUTTON0
     if ( b0 && !prev_b0 ) {
       amp_idx  = 4;
       freq_idx = 4;
@@ -289,7 +317,31 @@ int main(void){
       draw_line(&disp, fx, x, y_freq, buf, RGB_WHITE);
     }
 
-     prev_b0 = b0;
+    prev_b0 = b0;
+
+    int b1 = get_button_state(1);
+
+    // Rising edge on BUTTON0
+    if ( b1 && !prev_b1 ) {
+      amp_idx  = 5;
+      freq_idx = 5;
+
+      command_motor(4, 4);   // index 4 -> region 5
+
+      // update display to show override
+      clear_line(&disp, y_amp,  fh, RGB_BLACK);
+      clear_line(&disp, y_freq, fh, RGB_BLACK);
+
+      char buf[32], num[16];
+      strcpy(buf, "A_IDX=");
+      itoa_u(amp_idx, num); strcat(buf, num);
+      draw_line(&disp, fx, x, y_amp, buf, RGB_WHITE);
+
+      strcpy(buf, "F_IDX=");
+      itoa_u(freq_idx, num); strcat(buf, num);
+      draw_line(&disp, fx, x, y_freq, buf, RGB_WHITE);
+    }
+    prev_b1 = b1;
 
     sleep_msec(20);
   }
