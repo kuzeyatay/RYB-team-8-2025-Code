@@ -455,7 +455,7 @@ static void controller_step(int bpm_now, int cry_now)
   int improved = 0; // This will be set to 1 if the helper functions say that the situation actually got better after the last move.
   int same = 0;     // This will be set to 1 if the situation is considered stable
 
-  if (bpm_now < 150) // If the current BPM is below 150, we stop using heart rate as its delayed and focus more on crying as an indicator of stress.
+  if (bpm_now < 150 && cry_now<52) // If the current BPM is below 150, we stop using heart rate as its delayed and focus more on crying as an indicator of stress.
   {
     is_crying_activated = 1;             // We record that in this regime we are using crying as the primary signal to measure improvement.
     improved = crying_improved(cry_now); // We call crying_improved with the current CRY value. returns 1 if crying suggests improvement.
@@ -648,16 +648,25 @@ static void controller_step(int bpm_now, int cry_now)
 }
 
 // Ctrl+C handler
+// Ctrl+C handler
 static void handle_sigint(int sig __attribute__((unused)))
 {
+  // Stop HUD from drawing anything during shutdown
+  g_log_enabled = 0;
+
+  // Print to normal stdout only (no display drawing)
+  printf("\n Exited\n");
+
+  // Optional: you may skip the FillScreen; it is not needed on Ctrl+C.
   displayFillScreen(&g_disp, RGB_BLACK);
-  log_printf("\n Exited\n");
+
   display_destroy(&g_disp);
   switches_destroy();
   buttons_destroy();
   pynq_destroy();
   exit(0);
 }
+
 
 int main(void)
 {
@@ -988,4 +997,3 @@ int main(void)
   pynq_destroy();
   return EXIT_SUCCESS;
 }
-
