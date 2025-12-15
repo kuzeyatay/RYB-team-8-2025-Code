@@ -1,8 +1,17 @@
+//IMPORTANT
+#define AMPLITUDE_PIN IO_AR2 
+#define FREQUENCY_PIN IO_AR3
+// SWITCH ONE AWAY THE SCREEN FOR DEMO
+// TOWARD THE SCREEN FOR TEST
+//BUTTON 0 and 1 to control frequency up/down
+//BUTTON 2 and 3 to control amplitude up/down
+//IMPORTANT end
+
+
 // motor.c  — Address 3 (MOTOR)
 // Ring frame: [DST][SRC][LEN][PAYLOAD...]
 // Motor only receives values meant for it and never replies.
 // It forwards frames that are NOT for it.
-
 #include <libpynq.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -20,6 +29,7 @@
 
 #define AMP_CH 0
 #define FREQ_CH 1 // example, this is how its probably going to look like in production
+
 
 // --- tiny itoa (no sprintf) ---
 static void itoa_u(unsigned v, char *out){
@@ -184,12 +194,12 @@ void command_motor(int aIndex, int fIndex)
     set_pwm_percent(AMP_CH, dutyA);
     set_pwm_percent(FREQ_CH, dutyF);
 
-    switchbox_set_pin(IO_AR0, SWB_PWM0); //Set PWM0 to arduino pin 0
+    switchbox_set_pin(AMPLITUDE_PIN, SWB_PWM0); //Set PWM0 to arduino pin 0
     pwm_init(PWM0,100000); //give it a period of 100000 *10* 10e-9 seconds.
     pwm_set_duty_cycle(PWM0,100000*0.01*(dutyA)); //give it a duration of %duty cycle in %
     pwm_destroy(PWM0);//destroy PWM
 
-    switchbox_set_pin(IO_AR1, SWB_PWM1); //Set PWM0 to arduino pin 1
+    switchbox_set_pin(FREQUENCY_PIN, SWB_PWM1); //Set PWM0 to arduino pin 1
     pwm_init(PWM1,100000); //give it a period of 100000 *10* 10e-9 seconds.
     pwm_set_duty_cycle(PWM1,100000*0.01*(dutyF)); //give it a duration of %duty cycle in %
     pwm_destroy(PWM1);//destroy PWM
