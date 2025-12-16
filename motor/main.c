@@ -376,7 +376,7 @@ int main(void)
       {
         // Echo 'A' for boot ping
         uint8_t rsp[] = {'A'};
-        send_message(MSTR, HRTBT, rsp);
+        send_message(MSTR, MTR, rsp);
       }
       else if (cmd == 'M' && g_len >= 3)
       {
