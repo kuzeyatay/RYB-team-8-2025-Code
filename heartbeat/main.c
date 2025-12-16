@@ -5,15 +5,15 @@
 #include <time.h>
 #include <string.h>
 #include <signal.h>
-#include <stdio.h>   // for debugging if you want
-#include <stdlib.h>  // for exit()
+#include <stdio.h>  // for debugging if you want
+#include <stdlib.h> // for exit()
 
 #define UART_CH UART0
 
 #define MSTR 0
 #define HRTBT 1 // this module
-#define CRY  2
-#define MTR  3
+#define CRY 2
+#define MTR 3
 
 #define TIMEOUT 20
 #define MAX_PAY 5 // need this so the variable is global
@@ -36,8 +36,7 @@ static double now_msec(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec * 1000.0
-         + (double)ts.tv_nsec / 1.0e6;
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1.0e6;
 }
 
 // --------------------- small helpers ---------------------
@@ -148,57 +147,63 @@ static uint8_t g_payload[MAX_PAY];
 
 // receive_message
 // UPDATED: Now non-blocking. Returns -1 immediately if no data.
-static int receive_message(void) 
+static int receive_message(void)
 {
-  // 1. Check if ANY data is available. If not, return immediately.
-  //    This prevents the 20ms blocking delay every loop.
-  if (!uart_has_data(UART_CH)) 
-  {
-    return -1; 
-  }
+    // 1. Check if ANY data is available. If not, return immediately.
+    //    This prevents the 20ms blocking delay every loop.
+    if (!uart_has_data(UART_CH))
+    {
+        return -1;
+    }
 
-  // 2. Data is confirmed, so we can now safely use the timeout function
-  //    to read the full frame without stalling the main loop unnecessarily.
-  int b = receive_byte(); // Read DST
-  if (b < 0) return -1;
-  uint8_t dst = (uint8_t)b;
+    // 2. Data is confirmed, so we can now safely use the timeout function
+    //    to read the full frame without stalling the main loop unnecessarily.
+    int b = receive_byte(); // Read DST
+    if (b < 0)
+        return -1;
+    uint8_t dst = (uint8_t)b;
 
-  b = receive_byte();     // Read SRC
-  if (b < 0) return -1;
-  uint8_t src = (uint8_t)b;
+    b = receive_byte(); // Read SRC
+    if (b < 0)
+        return -1;
+    uint8_t src = (uint8_t)b;
 
-  b = receive_byte();     // Read LEN
-  if (b < 0) return -1;
-  uint8_t len = (uint8_t)b;
+    b = receive_byte(); // Read LEN
+    if (b < 0)
+        return -1;
+    uint8_t len = (uint8_t)b;
 
-  // --- Forwarding Logic ---
-  if (dst != HRTBT) 
-  {
-    uart_send(UART_CH, dst);
-    uart_send(UART_CH, src);
-    uart_send(UART_CH, len);
+    // --- Forwarding Logic ---
+    if (dst != HRTBT)
+    {
+        uart_send(UART_CH, dst);
+        uart_send(UART_CH, src);
+        uart_send(UART_CH, len);
+        for (int i = 0; i < len; i++)
+        {
+            int pb = receive_byte();
+            if (pb < 0)
+                return -2;
+            uart_send(UART_CH, (uint8_t)pb);
+        }
+        return 0;
+    }
+
+    // --- Receive Logic (For Me) ---
+    if (len > MAX_PAY)
+        len = MAX_PAY; // Safety clamp
+
     for (int i = 0; i < len; i++)
     {
-      int pb = receive_byte();
-      if (pb < 0) return -2;
-      uart_send(UART_CH, (uint8_t)pb);
+        b = receive_byte();
+        if (b < 0)
+            return -3;
+        g_payload[i] = (uint8_t)b;
     }
-    return 0; 
-  }
 
-  // --- Receive Logic (For Me) ---
-  if (len > MAX_PAY) len = MAX_PAY; // Safety clamp
-  
-  for (int i = 0; i < len; i++)
-  {
-    b = receive_byte();
-    if (b < 0) return -3;
-    g_payload[i] = (uint8_t)b;
-  }
-
-  g_src = src;
-  g_len = len;
-  return g_len; 
+    g_src = src;
+    g_len = len;
+    return g_len;
 }
 
 // ------------------ Photodiode-based heartbeat measurement ------------------
@@ -218,25 +223,25 @@ static int g_bpm_est = 0;
 static void heartbeat_update(double t_ms)
 {
     // --- Static state (kept between calls) ---
-    static int   BPM          = 0;     // last computed BPM
-    static int   IBI          = 600;   // inter-beat interval (ms), initial guess
-    static int   rate[10]     = {0};   // rolling history of last 10 IBI values
-    static int   rate_count   = 0;     // how many entries are valid (<=10)
+    static int BPM = 0;        // last computed BPM
+    static int IBI = 600;      // inter-beat interval (ms), initial guess
+    static int rate[10] = {0}; // rolling history of last 10 IBI values
+    static int rate_count = 0; // how many entries are valid (<=10)
 
-    static int   Peak         = 512;   // running peak of the waveform
-    static int   Trough       = 512;   // running trough of the waveform
-    static int   Threshold    = 550;   // detection threshold between Peak & Trough
-    static int   Amp          = 100;   // amplitude estimate = Peak - Trough
+    static int Peak = 512;      // running peak of the waveform
+    static int Trough = 512;    // running trough of the waveform
+    static int Threshold = 550; // detection threshold between Peak & Trough
+    static int Amp = 100;       // amplitude estimate = Peak - Trough
 
-    static bool  Pulse        = false; // true while we are "in" a beat
-    static bool  firstBeat    = true;  // special handling for very first beat
-    static bool  secondBeat   = false; // special case for second beat
+    static bool Pulse = false;      // true while we are "in" a beat
+    static bool firstBeat = true;   // special handling for very first beat
+    static bool secondBeat = false; // special case for second beat
 
     static double lastBeatTime_ms = 0.0; // time (ms) of last detected beat
 
     // --- Read analog from photodiode on ADC0 ---
-    float v = adc_read_channel(ADC0);  // 0.0 .. ~3.3 V (depending on board)
-    lvl = v;                           // store globally if you want to log it
+    float v = adc_read_channel(ADC0); // 0.0 .. ~3.3 V (depending on board)
+    lvl = v;                          // store globally if you want to log it
 
     // Scale to something like 0..1023 for threshold math
     // (3.3 * 310 ≈ 1023)
@@ -271,13 +276,13 @@ static void heartbeat_update(double t_ms)
     {
         // We detected a potential beat.
         Pulse = true;
-        IBI   = (int)(sampleCounter - lastBeatTime_ms);
+        IBI = (int)(sampleCounter - lastBeatTime_ms);
         lastBeatTime_ms = sampleCounter;
 
         // Ignore the first beat, we do not have a stable history yet.
         if (firstBeat)
         {
-            firstBeat  = false;
+            firstBeat = false;
             secondBeat = true;
             return;
         }
@@ -331,7 +336,7 @@ static void heartbeat_update(double t_ms)
     if (Signal < Threshold && Pulse)
     {
         Pulse = false;
-        Amp   = Peak - Trough;
+        Amp = Peak - Trough;
         if (Amp < 20)
         {
             // very small amplitude, force a minimum to keep Threshold sane
@@ -339,39 +344,38 @@ static void heartbeat_update(double t_ms)
         }
         // Set new Threshold halfway between peak and trough
         Threshold = Trough + Amp / 2;
-        Peak      = Threshold;
-        Trough    = Threshold;
+        Peak = Threshold;
+        Trough = Threshold;
     }
 
     // ---------------- If no beat for a long time, reset detector -------------
     // After ~2.5 seconds without a beat, assume signal lost or sensor off.
     if (N > 2500)
     {
-        Threshold        = 550;
-        Peak             = 512;
-        Trough           = 512;
-        lastBeatTime_ms  = sampleCounter;
-        firstBeat        = true;
-        secondBeat       = false;
-        Pulse            = false;
-        BPM              = 0;
-        g_bpm_est        = 0;
-        rate_count       = 0;
+        Threshold = 550;
+        Peak = 512;
+        Trough = 512;
+        lastBeatTime_ms = sampleCounter;
+        firstBeat = true;
+        secondBeat = false;
+        Pulse = false;
+        BPM = 0;
+        g_bpm_est = 0;
+        rate_count = 0;
     }
 }
 
-// ---------------- Ctrl+C handler ----------------
 
 static void handle_sigint(int sig __attribute__((unused)))
 {
-    displayFillScreen(&disp, RGB_BLACK);   // Clear display to black
+    displayFillScreen(&disp, RGB_BLACK); // Clear display to black
     printf("\n Exited\n");
-    display_destroy(&disp);                // De-initialize display
-    pynq_destroy();                        // De-initialize PYNQ hardware
-    exit(0);                               // Exit program
+    display_destroy(&disp); // De-initialize display
+    pynq_destroy();         // De-initialize PYNQ hardware
+    exit(0);                // Exit program
 }
 
-// -------------------------- main --------------------------
+
 
 int main(void)
 {
@@ -413,7 +417,7 @@ int main(void)
     y += fh;
     draw_line(&disp, fx, x, y, "Waiting for 'H'/'A'/'R'...", RGB_WHITE);
     y += fh;
-    int y_val = y;  // line where BPM / RND text is drawn
+    int y_val = y; // line where BPM / RND text is drawn
     y += fh;
 
     // ---- state ----
@@ -433,7 +437,7 @@ int main(void)
         int b1 = get_button_state(1);
         if (b0 && !prev_b0)
         {
-            bpm_button = 80;  // button 0 -> 80 BPM
+            bpm_button = 80; // button 0 -> 80 BPM
         }
         if (b1 && !prev_b1)
         {
