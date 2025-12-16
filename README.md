@@ -1,17 +1,17 @@
 # RYB-team-8-2025-Code
 # Rock Your Baby — Team 8 (2025) — Final Code
 
-This repository contains our **Rock-Your-Baby (RYB)** controller implementation. The system closes the loop around the TU/e “cradle chair” technical model: it **reads baby-state indicators** (heartbeat + crying loudness) and **drives the cradle** (amplitude + frequency) using PWM signals, with the goal of **reducing the simulated baby’s internal stress level** over time. :contentReference[oaicite:1]{index=1}
+This repository contains our **Rock-Your-Baby (RYB)** controller implementation. The system closes the loop around the TU/e “cradle chair” technical model: it **reads baby-state indicators** (heartbeat + crying loudness) and **drives the cradle** (amplitude + frequency) using PWM signals, with the goal of **reducing the simulated baby’s internal stress level** over time.
 
 ---
 
 ## System overview
 
 ### What the cradle model provides (plant + inverse model)
-The RYB set-up internally simulates a baby stress level **S ∈ [0, 100]** (not directly observable). Your controller cannot read `S` directly; instead it must infer improvement/worsening using:
+The RYB set-up internally simulates a baby stress level **S ∈ [0, 100]** (not directly observable). The controller cannot read `S` directly; instead it must infer improvement/worsening using:
 
 - **Crying volume H [%]** (responds *immediately* to stress but saturates at high stress)
-- **Heart rhythm R [BPM]** via wrist LED flashes (responds to stress with a **delay τ**) :contentReference[oaicite:2]{index=2}
+- **Heart rhythm R [BPM]** via wrist LED flashes (responds to stress with a **delay τ**)
 
 ### What our controller outputs
 The cradle motion is controlled via **two 1 kHz PWM signals**:
@@ -39,10 +39,10 @@ Duty cycle **> 90%** triggers a cradle warning/emergency indicator and must be a
 
 This repo is organized into **four embedded submodules** plus a **simulation/test** area:
 ├── decision/ # MASTER / decision-making controller (runs on PYNQ)
-├── heartbeat/ # HEARTBEAT sensor module (wrist LED -> BPM estimate)
-├── crying/ # CRYING sensor module (mic loudness -> crying metric)
-├── motor/ # MOTOR driver module (A/F commands -> 1kHz PWM outputs)
-└── sim/ # Simulation / test harness utilities (if applicable)
+├── heartbeat/ # HEARTBEAT sensor module (wrist LED -> BPM estimate) (runs on PYNQ)
+├── crying/ # CRYING sensor module (mic loudness -> crying metric) (runs on PYNQ)
+├── motor/ # MOTOR driver module (A/F commands -> 1kHz PWM outputs) (runs on PYNQ)
+└── sim/ # Simulation / Simulation created with expected baby behavior to test control logic (runs on pc)
 
 
 ### Communications model: UART ring protocol
@@ -57,7 +57,7 @@ Nodes communicate using a lightweight **UART “ring” protocol**:
 - Messages contain both destination and source and are forwarded unchanged until they reach the target.
 - A node **does not forward its own message** if it receives it back (prevents endless circulation). 
 
-> Practical wiring note: the ring can be connected in any order as long as every device has two UART neighbors and all grounds share a common ground. :contentReference[oaicite:7]{index=7}
+> Practical wiring note: the ring can be connected in any order as long as every device has two UART neighbors and all grounds share a common ground.
 
 ---
 
@@ -86,13 +86,13 @@ This is a real lab set-up that can be damaged by misuse. At minimum:
 - Do **not** force the cradle by hand; only use cradle motors.
 - Do **not** unplug mains, display, or power off the PC while operating.
 - Do **not** remove the baby doll from the chair.
-- Avoid adhesives for the wrist sensor mounting (use Velcro/cable ties/rubber bands). :contentReference[oaicite:11]{index=11}
+- Avoid adhesives for the wrist sensor mounting (use Velcro/cable ties/rubber bands).
 
 ### Power-up sequence (lab set-up)
 1. Connect cradle system to mains.
 2. Power the cradle PC (red power button, then PC power).
 3. Control software starts automatically after Windows boots.
-4. Use the cradle on/off button to enable movement; preset selects heartbeat mode; back panel potentiometer sets volume. :contentReference[oaicite:12]{index=12}
+4. Use the cradle on/off button to enable movement; preset selects heartbeat mode; back panel potentiometer sets volume.
 
 ---
 
@@ -115,22 +115,6 @@ This is a real lab set-up that can be damaged by misuse. At minimum:
    - Duty cycles stay within the valid region bands (never > 90%). :contentReference[oaicite:14]{index=14}
 
 ---
-
-## Notes for future teams
-
-- The official communication ring examples (including “full circle” message detection) are a strong baseline if you ever refactor the UART layer. 
-- The motor driver design must be treated as a power electronics problem (logic-level PWM is not sufficient). Use a proven transistor/MOSFET stage and validate under load. :contentReference[oaicite:16]{index=16}
-
----
-
-## Acknowledgements / references
-
-This project is built around the TU/e Rock-Your-Baby technical model and its provided interface specifications:
-- Technical setup & lab handling guidelines :contentReference[oaicite:17]{index=17}  
-- Main task details: stress model, BPM/volume behavior, PWM mapping :contentReference[oaicite:18]{index=18}  
-- UART ring communication reference implementations   
-- Example motor driver design notes (PWM to 12 V actuation) :contentReference[oaicite:20]{index=20}
-
 
 ## TODOS:
 
