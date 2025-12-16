@@ -13,14 +13,14 @@
 
 - improve wait on crying level(fixed)
 
-- fix the outside screen boundry issue with some clever logic (maybe)
+- fix the outside screen boundry issue with some clever logic (maybe, haha fixed)
 
 - implement a viable test decision making algorithm(fixed)
 
 - Emergency stop button on every submodule if something goes wrong(especially the motor one)
 
-- fix the jittery display
+- fix the jittery display(fixed by embracing it)
 
-- press button to imitate improved.
+- press button to imitate improved.(fixed)
 
 
