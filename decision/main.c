@@ -21,8 +21,9 @@
 #define MAX_PAY 5  // max payload length
 
 // *** NEW: real-world reaction delays to match the simulator ***
-#define HEARTBEAT_DELAY_MS 10000  // ~10 s heartbeat delay (TAU)
-#define CRYING_DELAY_MS     4000  // ~2 s crying / stress delay
+#define HEARTBEAT_DELAY 10000 // ~10 s heartbeat delay (TAU)
+#define CRYING_DELAY 4000     // ~2 s crying / stress delay
+#define CONVERGENCE_DELAY 4000
 
 // global variables for submodules (live readings)
 static uint8_t last_bpm = 0;
@@ -47,6 +48,7 @@ static int g_log_x = 0;
 static int g_log_y_start = 0;
 static int g_log_y = 0;
 static int g_log_enabled = 0;
+static int g_log_y_end = 0;
 
 // small helpers for display
 
@@ -91,13 +93,30 @@ static void clear_text_line(display_t *d, int y, int h, uint16_t bg)
   displayDrawFillRect(d, x1, y1, x2, y2, bg);
 }
 
-static void draw_text(display_t *d, FontxFile *fx, int x, int y, const char *s, uint16_t col)
+// safer version
+static void draw_text(display_t *d, FontxFile *fx, int x, int y,
+                      const char *s, uint16_t col)
 {
-  displayDrawString(d, fx, x, y, (uint8_t *)s, col);
+  if (!s)
+    return;
+
+  int fw = g_fw ? (int)g_fw : 8; // fallback
+  int max_chars = (DISPLAY_WIDTH - x) / fw;
+  if (max_chars <= 0)
+    return;
+
+  // copy + truncate into local buffer
+  char buf[128];
+  int i = 0;
+  for (; i < max_chars && s[i] && i < (int)sizeof(buf) - 1; i++)
+    buf[i] = s[i];
+  buf[i] = '\0';
+
+  displayDrawString(d, fx, x, y, (uint8_t *)buf, col);
 }
 
 // LOGGING HELPERS
-
+// Used by the controller to outbut stuff onto the oled screen
 static void hud_log(const char *msg)
 {
   if (!g_log_enabled)
@@ -105,18 +124,29 @@ static void hud_log(const char *msg)
 
   int h = g_fh ? g_fh : 16;
 
-  if (g_log_y_start < 0 || g_log_y_start > DISPLAY_HEIGHT - h)
-    return; // invalid region, avoid out-of-bounds
+  // Require a valid region
+  if (g_log_y_start < 0)
+    return;
+  if (g_log_y_end <= 0)
+    return;
+  if (g_log_y_end > DISPLAY_HEIGHT)
+    g_log_y_end = DISPLAY_HEIGHT;
 
-  if (g_log_y < g_log_y_start || g_log_y > DISPLAY_HEIGHT - h)
+  // If region too small for even 1 line, do nothing safely
+  if (g_log_y_end - g_log_y_start < h)
+    return;
+
+  // Wrap BEFORE drawing so we never draw off-screen
+  if (g_log_y < g_log_y_start || g_log_y > (g_log_y_end - h))
     g_log_y = g_log_y_start;
 
-  // clear and draw the log line
+  // Clear exactly one line inside the log region, then draw cyan text
   clear_text_line(&g_disp, g_log_y, h, RGB_BLACK);
   draw_text(&g_disp, g_fx, g_log_x, g_log_y, msg, RGB_CYAN);
 
+  // Advance and wrap within region
   g_log_y += h;
-  if (g_log_y > DISPLAY_HEIGHT - h)
+  if (g_log_y > (g_log_y_end - h))
     g_log_y = g_log_y_start;
 }
 
@@ -183,43 +213,58 @@ void send_message_raw(uint8_t dst, uint8_t src, const uint8_t payload[], uint8_t
   send_message_raw(dst, src, payload, (uint8_t)sizeof(payload))
 
 // receive a message into globals g_src, g_len, g_payload
+// receive_message
+// UPDATED: Now non-blocking. Returns -1 immediately if no data.
 static int receive_message(void)
 {
-  int b;
+    // 1. Check if ANY data is available. If not, return immediately.
+    //    This prevents the 20ms blocking delay every loop.
+    if (!uart_has_data(UART_CH))
+    {
+        return -1;
+    }
 
-  b = receive_byte();
-  if (b < 0)
-    return -1;
-  uint8_t dst = (uint8_t)b;
-
-  b = receive_byte();
-  if (b < 0)
-    return -1;
-  uint8_t src = (uint8_t)b;
-
-  b = receive_byte();
-  if (b < 0)
-    return -1;
-  uint8_t len = (uint8_t)b;
-
-  if (len > MAX_PAY)
-    len = MAX_PAY;
-
-  for (int i = 0; i < len; i++)
-  {
-    b = receive_byte();
+    // 2. Data is confirmed, so we can now safely use the timeout function
+    //    to read the full frame without stalling the main loop unnecessarily.
+    int b = receive_byte(); // Read DST
     if (b < 0)
-      return -2;
-    g_payload[i] = (uint8_t)b;
-  }
+        return -1;
+    uint8_t dst = (uint8_t)b;
 
-  if (dst != MSTR)
-    return 0; // message not for us
+    b = receive_byte(); // Read SRC
+    if (b < 0)
+        return -1;
+    uint8_t src = (uint8_t)b;
 
-  g_src = src;
-  g_len = len;
-  return g_len;
+    b = receive_byte(); // Read LEN
+    if (b < 0)
+        return -1;
+    uint8_t len = (uint8_t)b;
+
+    // Forwarding Logic BUT mstr is eighter the start or end of meesages so it should not forward.
+    
+    if (dst != MSTR)
+    {
+        return 0;
+    }
+
+    // --- Receive Logic (For Me) ---
+    if (len > MAX_PAY)
+        len = MAX_PAY; // Safety clamp
+
+    for (int i = 0; i < len; i++)
+    {
+        b = receive_byte();
+        if (b < 0)
+            return -3;
+        g_payload[i] = (uint8_t)b;
+    }
+
+    g_src = src;
+    g_len = len;
+    return g_len;
 }
+
 
 // Ping / random / sensor / motor commands
 
@@ -241,25 +286,25 @@ static int boot_ping(uint8_t dst)
 }
 
 // request random value from heartbeat or crying node (for demo)
-static int request_random(uint8_t dst)
-{
-  uint8_t payload[] = {'R'};
-  send_message(dst, MSTR, payload);
+// static int request_random(uint8_t dst)
+// {
+//   uint8_t payload[] = {'R'};
+//   send_message(dst, MSTR, payload);
 
-  int waited = 0;
-  while (waited < TIMEOUT)
-  {
-    int r = receive_message();
-    if (r > 0 && g_src == dst && g_len >= 2 && g_payload[0] == 'R')
-    {
-      return g_payload[1];
-    }
-    sleep_msec(1);
-    waited += 1;
-  }
+//   int waited = 0;
+//   while (waited < TIMEOUT)
+//   {
+//     int r = receive_message();
+//     if (r > 0 && g_src == dst && g_len >= 2 && g_payload[0] == 'R')
+//     {
+//       return g_payload[1];
+//     }
+//     sleep_msec(1);
+//     waited += 1;
+//   }
 
-  return -1; // timeout
-}
+//   return -1; // timeout
+// }
 
 // request heartbeat value
 static int request_heartbeat(void)
@@ -305,21 +350,21 @@ static void command_motor(uint8_t amp, uint8_t freq)
 }
 
 // send random motor command (for demo)
-static void motor_send_random(void)
-{
-  static bool seeded = false;
-  if (!seeded)
-  {
-    srand(time(NULL));
-    seeded = true;
-  }
+// static void motor_send_random(void)
+// {
+//   static bool seeded = false;
+//   if (!seeded)
+//   {
+//     srand(time(NULL));
+//     seeded = true;
+//   }
 
-  g_amp = (uint8_t)(rand() % 101);        // 0–100
-  g_freq = (uint8_t)(20 + (rand() % 81)); // 20–100
+//   g_amp = (uint8_t)(rand() % 101);        // 0–100
+//   g_freq = (uint8_t)(20 + (rand() % 81)); // 20–100
 
-  uint8_t pl[] = {'M', g_amp, g_freq};
-  send_message(MTR, MSTR, pl);
-}
+//   uint8_t pl[] = {'M', g_amp, g_freq};
+//   send_message(MTR, MSTR, pl);
+// }
 
 // Controller state + logic
 
@@ -343,11 +388,42 @@ static int triedUpFromAnchor = 0;
 // 0 = none/initial, 1 = LEFT, 2 = UP
 static int lastMoveDir = 0;
 
+static int hit_wall = 0; // 1 if we attempted a direction but boundary blocked this cycle
+
 // anchor map discovered so far (0 = unknown)
 static int anchorMatrix[5][5] = {0};
 static int anchorLevel = 0;
 
 static int panic_mode = 0;
+
+// timing
+static double g_algo_start_ms = 0.0;
+static int g_calm_reached = 0;
+static int g_calm_elapsed_ms = 0;
+
+// monotonic time in milliseconds
+static double now_msec(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+// format mm:ss into out[8] (e.g., "03:17")
+static void fmt_mmss(int ms, char out[8])
+{
+  if (ms < 0)
+    ms = 0;
+  int sec = ms / 1000;
+  int mm = sec / 60;
+  int ss = sec % 60;
+  out[0] = (char)('0' + (mm / 10) % 10);
+  out[1] = (char)('0' + (mm % 10));
+  out[2] = ':';
+  out[3] = (char)('0' + (ss / 10));
+  out[4] = (char)('0' + (ss % 10));
+  out[5] = '\0';
+}
 
 // Map logical cell (A,F) -> actual motor amplitude/frequency percentages.
 static void controller_command_cell(int aIndex, int fIndex)
@@ -371,6 +447,14 @@ static void controller_command_cell(int aIndex, int fIndex)
   curF = fIndex;
 
   command_motor(amp, freq);
+  // ---- CALM detection (A1F1 == indices 0,0) ----
+  // We only count calm if we are NOT in panic mode (panic currently forces A1F1).
+  if (!g_calm_reached && !panic_mode && g_algo_start_ms > 0.0 && curA == 0 && curF == 0)
+  {
+    g_calm_reached = 1;
+    g_calm_elapsed_ms = (int)(now_msec() - g_algo_start_ms);
+    log_printf("[A] CALM reached in %d ms\n", g_calm_elapsed_ms);
+  }
 }
 
 // improvement tests (from sim)
@@ -402,8 +486,8 @@ static void register_anchor(int a, int f)
   {
     anchorLevel++;
     anchorMatrix[a][f] = 10 - anchorLevel;
-    log_printf("[ANCHOR] registered A%d F%d as anchor level %d\n",
-               a + 1, f + 1, anchorLevel + 1);
+    log_printf("[A] set A%d F%d as anchor L%d\n",
+               a + 1, f + 1, anchorLevel);
   }
 }
 
@@ -412,8 +496,9 @@ static void register_anchor(int a, int f)
 // Yes this is extensively documented so that everyone can understand. Yes including me.
 // bpm_now is the current heartbeat in BPM, cry_now is the current crying level (%) both are measured by the submodules, hopefully.
 static void controller_step(int bpm_now, int cry_now)
-
 {
+  hit_wall = 0; // Detector flag for (AxF1 or A1Fx so we can be smart and reduce the delay to just the convergence time)
+
   // PANIC DETECTION USING VITALS
   // In this part we look only at BPM and CRY and decide whether the baby is in a panic state and we must enter panic_mode.
   // This matters because if we are in panic mode we need to go to K9 to start again. Currently the motors stop for testing purposes
@@ -423,17 +508,13 @@ static void controller_step(int bpm_now, int cry_now)
   if (ctrl_lastBPM > 0)                        // We only check for a BPM jump if we have a valid previous BPM
     big_jump = (bpm_now - ctrl_lastBPM >= 30); // Here we compute the difference between current BPM and last BPM, and set big_jump to 1 if the increase is 30 BPM or more.
 
-  int very_high_bpm = (bpm_now >= 230);                 // This flag is 1 if the BPM is extremely high (230 or above), which by itself is a panic condition.
-  int high_bpm_and_jump = (bpm_now >= 220 && big_jump); // This flag is 1 if BPM is already high (>= 220) and also had a big jump, this combination is treated as panic.
-  int scream_cry = (cry_now >= 100 && bpm_now >= 200);  // This flag is 1 if the Crying is very high while BPM is also high (>= 200), another panic condition.
-
   if (!panic_mode) // We only re-check panic conditions if we are not already in panic mode; once in panic, we stay there until its reseted somehow (not implement rk).
   {
-    if (very_high_bpm || high_bpm_and_jump || scream_cry) // If any of our panic flags are true, panic.
+    if (big_jump) // If any of our panic flags are true, panic.
     {
       panic_mode = 1; // We now enter panic mode, meaning that the rest of this function will follow the panic-mode path instead of the normal algorithm.
 
-      log_printf("[PANIC] vitals-triggered Baby is panicked (BPM=%d, CRY=%d)\n", bpm_now, cry_now); // We log a message so we can see exactly when and with what values the panic was triggered.
+      log_printf("[A] PANIC(BPM=%d, CRY=%d)\n", bpm_now, cry_now); // We log a message so we can see exactly when and with what values the panic was triggered.
     }
   }
 
@@ -455,7 +536,7 @@ static void controller_step(int bpm_now, int cry_now)
   int improved = 0; // This will be set to 1 if the helper functions say that the situation actually got better after the last move.
   int same = 0;     // This will be set to 1 if the situation is considered stable
 
-  if (bpm_now < 150 && cry_now<52) // If the current BPM is below 150, we stop using heart rate as its delayed and focus more on crying as an indicator of stress.
+  if (bpm_now < 150 && cry_now < 52) // If the current BPM is below 150, we stop using heart rate as its delayed and focus more on crying as an indicator of stress.
   {
     is_crying_activated = 1;             // We record that in this regime we are using crying as the primary signal to measure improvement.
     improved = crying_improved(cry_now); // We call crying_improved with the current CRY value. returns 1 if crying suggests improvement.
@@ -475,7 +556,7 @@ static void controller_step(int bpm_now, int cry_now)
     {
       if (bpm_delta <= 3) // then we consider the state “stable” if BPM changed by at most 3 beats since the last step.
       {
-        log_printf("[ALGORITHM] HB-only stable (ΔBPM=%d)\n", bpm_delta);
+        log_printf("[A] HB stable ΔBPM=%d\n", bpm_delta);
         if (lastMoveDir == 1) // If the last move we made on the grid was a LEFT move (direction 1),
           same = 1;           // we set same to 1, meaning we have a “stable after LEFT” pattern that we will react to with a special move i call reverse diagonal later.
       }
@@ -484,9 +565,9 @@ static void controller_step(int bpm_now, int cry_now)
     {
       if (cry_delta == 0) // we treat the situation as stable only if crying did not change at all (difference equals zero).
       {
-        log_printf("[ALGORITHM] CRY-only stable (ΔCRY=%d)\n", cry_delta); // We log that the crying level is stable and show the CRY difference (which is zero here).
-        if (lastMoveDir == 1)                                             // Again, this only matters if the last move direction was LEFT,
-          same = 1;                                                       // so we set same to 1 in that case to remember the “stable after LEFT” condition.
+        log_printf("[A] CRY stable ΔCRY=%d\n", cry_delta); // We log that the crying level is stable and show the CRY difference (which is zero here).
+        if (lastMoveDir == 1)                              // Again, this only matters if the last move direction was LEFT,
+          same = 1;                                        // so we set same to 1 in that case to remember the “stable after LEFT” condition.
       }
     }
   }
@@ -516,13 +597,26 @@ static void controller_step(int bpm_now, int cry_now)
   {
     prevA = curA; // We store the current amplitude index as prevA, so we can return here later if needed.
     prevF = curF; // We also store the current frequency index as prevF for the same reason.
+    if (!triedLeftFromAnchor && curF == 0)
+    {
+      hit_wall = 1; // wanted to try LEFT but wall
+      controller_command_cell(curA - 1, curF);
+      log_printf("[A] Hit left wall\n");
+    }
+    else if (!triedUpFromAnchor && curA == 0)
+    {
+      hit_wall = 1; // wanted to try UP but wall
+      controller_command_cell(curA, curF - 1);
+      log_printf("[A] Hit upper wall\n");
+    }
+    // just to be sure we still check vitals after we hit a wall instead of just going down.
 
-    if (!triedLeftFromAnchor && curF > 0) // If we have not already tried going LEFT from this anchor and we are not at the left border of the grid (F > 0),
+    else if (!triedLeftFromAnchor && curF > 0) // If we have not already tried going LEFT from this anchor and we are not at the left border of the grid (F > 0),
     {
       lastMoveDir = 1;         // We set lastMoveDir to 1 to remember that we are now making a LEFT move.
       triedLeftFromAnchor = 1; // We also mark that from this anchor, LEFT has now been attempted, so we do not retry it immediately later.
 
-      log_printf("[ALGORITHM] initial -> LEFT from A%d F%d\n", curA + 1, curF + 1);
+      log_printf("[A] TRY-> LEFT from A%d F%d\n", curA + 1, curF + 1);
 
       controller_command_cell(curA, curF - 1); // We send the actual motor command to move to the cell with the same A index and F index decreased by one (one step LEFT on the grid).
 
@@ -535,7 +629,7 @@ static void controller_step(int bpm_now, int cry_now)
       lastMoveDir = 2;       // We set lastMoveDir to 2 to indicate that our next move is an UP move.
       triedUpFromAnchor = 1; // We mark that from this anchor, UP has been attempted, to avoid repeating it unnecessarily.
 
-      log_printf("[ALGORITHM] initial -> UP from A%d F%d (LEFT tried/blocked)\n", curA + 1, curF + 1); // We log that our initial move from this anchor is UP, and note that LEFT was already tried or blocked.
+      log_printf("[A] Blocked-> UP from A%d F%d\n", curA + 1, curF + 1); // We log that our TRY move from this anchor is UP, and note that LEFT was already tried or blocked.
 
       controller_command_cell(curA - 1, curF); // We send the motor command to move to the neighbour above, which has A index decreased by one and the same F index.
 
@@ -543,9 +637,17 @@ static void controller_step(int bpm_now, int cry_now)
       ctrl_lastCRY = cry_now; // We also store the CRY level for the same reason.
       return;                 // We return here, again to wait for the effect of this UP move on the vitals.
     }
+    else if (curA + 1 == 1 && curF + 1 == 1) // If neither LEFT nor UP is available (or both have already been tried from this anchor),
+    {
+      log_printf("[A] BABY CALM holding A%d F%d\n", curA + 1, curF + 1);
+
+      ctrl_lastBPM = bpm_now; // Even though we are not moving, we still update the last BPM value to what we just measured.
+      ctrl_lastCRY = cry_now; // And we also update the last CRY value.
+      return;                 // We exit the function while staying at this anchor, just monitoring the baby’s state.
+    }
     else // If neither LEFT nor UP is available (or both have already been tried from this anchor),
     {
-      log_printf("[ALGORITHM] Fatal Error! ; holding A%d F%d\n", curA + 1, curF + 1);
+      log_printf("[A] Fatal Error! holding A%d F%d\n", curA + 1, curF + 1);
 
       ctrl_lastBPM = bpm_now; // Even though we are not moving, we still update the last BPM value to what we just measured.
       ctrl_lastCRY = cry_now; // And we also update the last CRY value.
@@ -560,7 +662,7 @@ static void controller_step(int bpm_now, int cry_now)
     int anchorA = curA; // We now treat the current A index (where we ended up) as a new anchor amplitude index.
     int anchorF = curF; // We also treat the current F index as a new anchor frequency index.
 
-    log_printf("[ALGORITHM] last move (dir=%d) IMPROVED -> anchor A%d F%d\n", lastMoveDir, anchorA + 1, anchorF + 1);
+    log_printf("[A] IMPROVED -> anchor A%d F%d\n", anchorA + 1, anchorF + 1);
 
     register_anchor(anchorA, anchorF); // We tell the anchor-management logic that this cell (anchorA, anchorF) should be added or updated as an anchor on the path.
 
@@ -580,7 +682,7 @@ static void controller_step(int bpm_now, int cry_now)
       lastMoveDir = 1;         // We set the last move direction to LEFT again, as we are planning a follow-up LEFT move.
       triedLeftFromAnchor = 1; // We mark that LEFT has been tried from this anchor so we do not keep repeating it forever.
 
-      log_printf("[ALGORITHM] improved -> next LEFT from A%d F%d\n", anchorA + 1, anchorF + 1); // We log that, because the last move was good, we are going to continue exploring by moving LEFT from this new anchor.
+      log_printf("[A] IMPROVED-> try LEFT from A%d F%d\n", anchorA + 1, anchorF + 1); // We log that, because the last move was good, we are going to continue exploring by moving LEFT from this new anchor.
 
       controller_command_cell(anchorA, anchorF - 1); // We command the motor module to move to the cell one step LEFT of the current anchor position.
       // we can shorten delays if borders are hit since there is only going to remain one path to solution so we wouldnt need to wait for the whole heartbeat delay and just the convergence delay. I just dont think this will happen.
@@ -590,7 +692,7 @@ static void controller_step(int bpm_now, int cry_now)
       lastMoveDir = 2; // We set the next move direction to UP.
       // Note: we do not mark triedUpFromAnchor here, but we could if we want symmetric behaviour.
 
-      log_printf("[ALGORITHM] improved -> next UP from A%d F%d\n", anchorA + 1, anchorF + 1); // We log that we improved and now we will try moving UP from this anchor instead.
+      log_printf("[A] IMPROVED-> try UP from A%d F%d\n", anchorA + 1, anchorF + 1); // We log that we improved and now we will try moving UP from this anchor instead.
 
       controller_command_cell(anchorA - 1, anchorF); // We command a move to the cell directly above this anchor (one step lower in A index).
     }
@@ -610,7 +712,7 @@ static void controller_step(int bpm_now, int cry_now)
 
       if (anchorA > 0) // If we can still move UP from that previous anchor (i.e., we are not at the top row),
       {
-        log_printf("[ALGORITHM] SAME after LEFT -> REVERSE DIAGONAL from A%d F%d\n", anchorA + 1, anchorF + 1); // We log that we detected the “same after left” pattern and will now try a reverse diagonal step from that anchor.
+        log_printf("[A] SAME-> R.D from A%d F%d\n", anchorA + 1, anchorF + 1); // We log that we detected the “same after left” pattern and will now try a reverse diagonal step from that anchor.
 
         lastMoveDir = 2;       // We set lastMoveDir to 2 because the reverse diagonal involves an UP move from the previous anchor.
         triedUpFromAnchor = 1; // We mark that, from this anchor, we are now trying UP so we do not keep repeating it unnecessarily.
@@ -631,7 +733,7 @@ static void controller_step(int bpm_now, int cry_now)
 
     if (anchorA != curA || anchorF != curF) // If we are not already at that previous anchor cell,
     {
-      log_printf("[ALGORITHM] last move (dir=%d) NO IMPROVEMENT -> backtrack A%d F%d\n", lastMoveDir, anchorA + 1, anchorF + 1); // We log that there was no improvement and that we are backtracking to that anchor, including the direction we came from.
+      log_printf("[A] NO IMPROVEMENT -> A%d F%d\n", anchorA + 1, anchorF + 1); // We log that there was no improvement and that we are backtracking to that anchor, including the direction we came from.
 
       controller_command_cell(anchorA, anchorF); // We send the command to move the motor state back exactly to the previous anchor cell on the grid.
     }
@@ -647,7 +749,6 @@ static void controller_step(int bpm_now, int cry_now)
   }
 }
 
-// Ctrl+C handler
 // Ctrl+C handler
 static void handle_sigint(int sig __attribute__((unused)))
 {
@@ -666,7 +767,6 @@ static void handle_sigint(int sig __attribute__((unused)))
   pynq_destroy();
   exit(0);
 }
-
 
 int main(void)
 {
@@ -696,89 +796,283 @@ int main(void)
   int y = g_fh * 1;
 
   // MODE 1: communication demo (random) (switch 0)
+  // if (get_switch_state(0) == 1)
+  // {
+  //   draw_text(&g_disp, g_fx, x, y, "COMMUNICATION DEMO MODE[R]", RGB_GREEN);
+  //   y += g_fh;
+  //   draw_text(&g_disp, g_fx, x, y, "[BOOT]: requesting random", RGB_WHITE);
+  //   y += g_fh;
+  //   draw_text(&g_disp, g_fx, x, y, "data from all modules", RGB_WHITE);
+  //   y += g_fh;
+  //   y += g_fh;
+
+  //   int v;
+  //   int successCounter = 0;
+
+  //   // heartbeat
+  //   draw_text(&g_disp, g_fx, x, y, "Heartbeat @1: ...", RGB_WHITE);
+  //   v = request_random(HRTBT);
+  //   clear_text_line(&g_disp, y, g_fh, RGB_BLACK);
+  //   if (v >= 0)
+  //   {
+  //     successCounter++;
+  //     char buf[32], num[16];
+  //     strcpy(buf, "HB @1: ALIVE:");
+  //     itoa_u((unsigned)v, num);
+  //     strcat(buf, num);
+  //     draw_text(&g_disp, g_fx, x, y, buf, RGB_GREEN);
+  //   }
+  //   else
+  //   {
+  //     draw_text(&g_disp, g_fx, x, y, "HB @1: FAILED", RGB_RED);
+  //   }
+  //   y += g_fh;
+
+  //   // crying
+  //   draw_text(&g_disp, g_fx, x, y, "Crying @2: ...", RGB_WHITE);
+  //   v = request_random(CRY);
+  //   clear_text_line(&g_disp, y, g_fh, RGB_BLACK);
+  //   if (v >= 0)
+  //   {
+  //     successCounter++;
+  //     char buf1[32], num1[16];
+  //     strcpy(buf1, "CRY @2: ALIVE:");
+  //     itoa_u((unsigned)v, num1);
+  //     strcat(buf1, num1);
+  //     draw_text(&g_disp, g_fx, x, y, buf1, RGB_GREEN);
+  //   }
+  //   else
+  //   {
+  //     draw_text(&g_disp, g_fx, x, y, "CRY @2: FAILED", RGB_RED);
+  //   }
+  //   y += g_fh;
+
+  //   // motor
+  //   draw_text(&g_disp, g_fx, x, y, "Motor @3: ...", RGB_WHITE);
+  //   motor_send_random();
+  //   clear_text_line(&g_disp, y, g_fh, RGB_BLACK);
+
+  //   successCounter++;
+  //   char buf[48], a[16], f[16];
+  //   strcpy(buf, "MTR @3: SENT A:");
+  //   itoa_u((unsigned)g_amp, a);
+  //   strcat(buf, a);
+  //   strcat(buf, " F:");
+  //   itoa_u((unsigned)g_freq, f);
+  //   strcat(buf, f);
+  //   draw_text(&g_disp, g_fx, x, y, buf, RGB_YELLOW);
+  //   y += g_fh;
+  //   y += g_fh;
+
+  //   if (successCounter == 1)
+  //   {
+  //     draw_text(&g_disp, g_fx, x, y, "DEMO FAILED", RGB_RED);
+  //     y += g_fh;
+  //   }
+  //   if (successCounter == 3)
+  //   {
+  //     draw_text(&g_disp, g_fx, x, y, "DEMO PASSED", RGB_GREEN);
+  //     y += g_fh;
+  //   }
+
+  //   // stay here until switch 0 is turned off
+  //   while (get_switch_state(0) == 1)
+  //     sleep_msec(10);
+
+  //   display_destroy(&g_disp);
+  //   switches_destroy();
+  //   buttons_destroy();
+  //   pynq_destroy();
+  //   return EXIT_SUCCESS;
+  // }
+
+  // MODE 1: MANUAL VITALS DEMO (switch 0)
+  // Buttons:
+  //  B0: BPM-   (minus 10)
+  //  B1: BPM+   (plus 10)
+  //  B2: CRY-   (minus 10)
+  //  B3: CRY+   (plus 10)
   if (get_switch_state(0) == 1)
   {
-    draw_text(&g_disp, g_fx, x, y, "COMMUNICATION DEMO MODE[R]", RGB_GREEN);
+    // Start values chosen to show algorithm behavior immediately
+    uint8_t demo_bpm = 220; // likely HB-driven
+    uint8_t demo_cry = 100; // typical "stressed" cry
+    // int prev_b0 = 0, prev_b1 = 0, prev_b2 = 0, prev_b3 = 0;
+
+    displayFillScreen(&g_disp, RGB_BLACK);
+    y = g_fh * 1;
+
+    draw_text(&g_disp, g_fx, x, y, "DEMO MODE: MANUAL VITALS", RGB_GREEN);
     y += g_fh;
-    draw_text(&g_disp, g_fx, x, y, "[BOOT]: requesting random", RGB_WHITE);
-    y += g_fh;
-    draw_text(&g_disp, g_fx, x, y, "data from all modules", RGB_WHITE);
-    y += g_fh;
+    draw_text(&g_disp, g_fx, x, y, "3CRY+ 2CRY- 1BPM+ 0BPM-", RGB_WHITE);
     y += g_fh;
 
-    int v;
-    int successCounter = 0;
-
-    // heartbeat
-    draw_text(&g_disp, g_fx, x, y, "Heartbeat @1: ...", RGB_WHITE);
-    v = request_random(HRTBT);
-    clear_text_line(&g_disp, y, g_fh, RGB_BLACK);
-    if (v >= 0)
-    {
-      successCounter++;
-      char buf[32], num[16];
-      strcpy(buf, "HB @1: ALIVE:");
-      itoa_u((unsigned)v, num);
-      strcat(buf, num);
-      draw_text(&g_disp, g_fx, x, y, buf, RGB_GREEN);
-    }
-    else
-    {
-      draw_text(&g_disp, g_fx, x, y, "HB @1: FAILED", RGB_RED);
-    }
+    // Reserve fixed HUD lines (so we can clear/redraw in place)
+    int y_demo_bpm = y;
+    y += g_fh;
+    int y_demo_cry = y;
+    y += g_fh;
+    int y_demo_mode = y;
+    y += g_fh;
+    int y_demo_cell = y;
+    y += g_fh;
+    int y_demo_mtr = y;
+    y += g_fh;
+    int y_demo_panic = y;
+    y += g_fh;
+    int y_demo_time = y;
     y += g_fh;
 
-    // crying
-    draw_text(&g_disp, g_fx, x, y, "Crying @2: ...", RGB_WHITE);
-    v = request_random(CRY);
-    clear_text_line(&g_disp, y, g_fh, RGB_BLACK);
-    if (v >= 0)
-    {
-      successCounter++;
-      char buf1[32], num1[16];
-      strcpy(buf1, "CRY @2: ALIVE:");
-      itoa_u((unsigned)v, num1);
-      strcat(buf1, num1);
-      draw_text(&g_disp, g_fx, x, y, buf1, RGB_GREEN);
-    }
-    else
-    {
-      draw_text(&g_disp, g_fx, x, y, "CRY @2: FAILED", RGB_RED);
-    }
-    y += g_fh;
+    // Put log region below HUD (optional; uses your existing hud_log)
+    g_log_x = x;
+    g_log_y_start = y + g_fh;
 
-    // motor
-    draw_text(&g_disp, g_fx, x, y, "Motor @3: ...", RGB_WHITE);
-    motor_send_random();
-    clear_text_line(&g_disp, y, g_fh, RGB_BLACK);
+    // *** NEW *** define end of cyan log region (do not touch HUD above)
+    g_log_y_end = DISPLAY_HEIGHT; // default: use bottom of screen
+    // If you want to reserve a safety margin of 2 px:
+    g_log_y_end = DISPLAY_HEIGHT - 2;
 
-    successCounter++;
-    char buf[48], a[16], f[16];
-    strcpy(buf, "MTR @3: SENT A:");
-    itoa_u((unsigned)g_amp, a);
-    strcat(buf, a);
-    strcat(buf, " F:");
-    itoa_u((unsigned)g_freq, f);
-    strcat(buf, f);
-    draw_text(&g_disp, g_fx, x, y, buf, RGB_YELLOW);
-    y += g_fh;
-    y += g_fh;
+    if (g_log_y_start > g_log_y_end - g_fh)
+      g_log_y_start = g_log_y_end - g_fh;
 
-    if (successCounter == 1)
-    {
-      draw_text(&g_disp, g_fx, x, y, "DEMO FAILED", RGB_RED);
-      y += g_fh;
-    }
-    if (successCounter == 3)
-    {
-      draw_text(&g_disp, g_fx, x, y, "DEMO PASSED", RGB_GREEN);
-      y += g_fh;
-    }
+    g_log_y = g_log_y_start;
+    g_log_enabled = 1;
 
-    // stay here until switch 0 is turned off
+    // Ensure controller starts from known state (A5 F5)
+    curA = 4;
+    curF = 4;
+    prevA = curA;
+    prevF = curF;
+    lastMoveDir = 0;
+    is_crying_activated = 0;
+    ctrl_lastBPM = -1;
+    ctrl_lastCRY = -1;
+    anchorA_mem = -1;
+    anchorF_mem = -1;
+    triedLeftFromAnchor = 0;
+    triedUpFromAnchor = 0;
+    memset(anchorMatrix, 0, sizeof(anchorMatrix)); // idek wtf this is but hopefully we arent using the anchor matrix
+    anchorLevel = 0;
+    panic_mode = 0;
+
+    // Put motor to start cell so the output line is meaningful immediately
+    controller_command_cell(curA, curF);
+
+    g_algo_start_ms = now_msec();
+    g_calm_reached = 0;
+    g_calm_elapsed_ms = 0;
+
+    // Run demo until switch 0 is turned off
+    int cry_flag = 0;
     while (get_switch_state(0) == 1)
-      sleep_msec(10);
+    {
+      // --- Buttons (not-edge-detected) ---
+      int b0 = get_button_state(0);
+      int b1 = get_button_state(1);
+      int b2 = get_button_state(2);
+      int b3 = get_button_state(3);
 
+      // Level-based: if you hold the button until the next loop iteration, it will apply.
+      if (b0)
+        demo_bpm = (uint8_t)clampi((int)demo_bpm - 10, 60, 240);
+      if (b1)
+        demo_bpm = (uint8_t)clampi((int)demo_bpm + 10, 60, 240);
+      if (b2)
+        demo_cry = (uint8_t)clampi((int)demo_cry - 10, 0, 100);
+      if (b3)
+        demo_cry = (uint8_t)clampi((int)demo_cry + 10, 0, 100);
+
+      if (demo_bpm < 150 && !cry_flag)
+      {
+        demo_cry = 52;
+        cry_flag = 1;
+      }
+
+      // --- Run real decision logic with injected vitals ---
+      controller_step((int)demo_bpm, (int)demo_cry);
+
+      // --- Draw HUD lines (clear then redraw fixed positions) ---
+      clear_text_line(&g_disp, y_demo_bpm, g_fh, RGB_BLACK);
+      clear_text_line(&g_disp, y_demo_cry, g_fh, RGB_BLACK);
+      clear_text_line(&g_disp, y_demo_mode, g_fh, RGB_BLACK);
+      clear_text_line(&g_disp, y_demo_cell, g_fh, RGB_BLACK);
+      clear_text_line(&g_disp, y_demo_mtr, g_fh, RGB_BLACK);
+      clear_text_line(&g_disp, y_demo_panic, g_fh, RGB_BLACK);
+      clear_text_line(&g_disp, y_demo_time, g_fh, RGB_BLACK);
+
+      char buf[96], num[16];
+
+      // BPM line
+      strcpy(buf, "[DEMO] BPM=");
+      itoa_u(demo_bpm, num);
+      strcat(buf, num);
+      draw_text(&g_disp, g_fx, x, y_demo_bpm, buf, RGB_WHITE);
+
+      // CRY line
+      strcpy(buf, "[DEMO] CRY=");
+      itoa_u(demo_cry, num);
+      strcat(buf, num);
+      strcat(buf, "%");
+      draw_text(&g_disp, g_fx, x, y_demo_cry, buf, RGB_WHITE);
+
+      // Regime line (uses your global is_crying_activated)
+      if (is_crying_activated)
+        strcpy(buf, "[MODE] CRY driven"); // shorter delay
+      else
+        strcpy(buf, "[MODE] HB driven");
+      draw_text(&g_disp, g_fx, x, y_demo_mode, buf, RGB_YELLOW);
+
+      // Controller output cell (curA/curF are your controller state)
+      strcpy(buf, "[CTRL] Decided Cell: A");
+      itoa_u((unsigned)(curA + 1), num);
+      strcat(buf, num);
+      strcat(buf, " F");
+      itoa_u((unsigned)(curF + 1), num);
+      strcat(buf, num);
+      draw_text(&g_disp, g_fx, x, y_demo_cell, buf, RGB_CYAN);
+
+      // Motor command output (g_amp/g_freq are your command outputs)
+      strcpy(buf, "[MOTOR] CMD-> A:");
+      itoa_u((unsigned)g_amp, num);
+      strcat(buf, num);
+      strcat(buf, "% F:");
+      itoa_u((unsigned)g_freq, num);
+      strcat(buf, num);
+      strcat(buf, "%");
+      draw_text(&g_disp, g_fx, x, y_demo_mtr, buf, RGB_WHITE);
+
+      // Panic indicator
+      strcpy(buf, "[PANIC] ");
+      strcat(buf, panic_mode ? "TRIGGERED" : "NOT TRIGGERED");
+      draw_text(&g_disp, g_fx, x, y_demo_panic, buf, panic_mode ? RGB_RED : RGB_GREEN);
+      int elapsed_ms = g_calm_reached ? g_calm_elapsed_ms : (int)(now_msec() - g_algo_start_ms);
+      char tbuf[8];
+      fmt_mmss(elapsed_ms, tbuf);
+
+      strcpy(buf, "[TIME] ");
+      strcat(buf, tbuf);
+      strcat(buf, g_calm_reached ? " (CALM)" : "");
+      draw_text(&g_disp, g_fx, x, y_demo_time, buf, g_calm_reached ? RGB_GREEN : RGB_WHITE);
+
+      int delay_ms_s;
+      if (hit_wall)
+      {
+        delay_ms_s = CONVERGENCE_DELAY;
+      }
+      else if (is_crying_activated)
+      {
+        delay_ms_s = CRYING_DELAY;
+      }
+      else
+      {
+        delay_ms_s = HEARTBEAT_DELAY;
+      }
+
+      sleep_msec(delay_ms_s);
+    }
+
+    // Exit demo mode cleanly
+    g_log_enabled = 0;
     display_destroy(&g_disp);
     switches_destroy();
     buttons_destroy();
@@ -898,16 +1192,21 @@ int main(void)
   draw_text(&g_disp, g_fx, x, y_mt, mtr_ok ? "MTR @3: ALIVE" : "MTR @3: MISSING",
             mtr_ok ? RGB_GREEN : RGB_RED);
 
-  if (!hb_ok)
-    draw_text(&g_disp, g_fx, x, y += g_fh, "[WARN] HB missing, BPM=80", RGB_YELLOW);
-  if (!cry_ok)
-    draw_text(&g_disp, g_fx, x, y += g_fh, "[WARN] CRY missing, %=0", RGB_YELLOW);
-  if (!mtr_ok)
-    draw_text(&g_disp, g_fx, x, y += g_fh, "[WARN] MOTOR missing", RGB_YELLOW);
-
-  int y_live_hb = y + g_fh;
-  int y_live_cry = y + 2 * g_fh;
-  int y_live_mtr = y + 3 * g_fh;
+  // Reserve fixed HUD lines (clear/redraw in place)
+  int y_live_hb = y;
+  y += g_fh;
+  int y_live_cry = y;
+  y += g_fh;
+  int y_live_mode = y;
+  y += g_fh;
+  int y_live_cell = y;
+  y += g_fh;
+  int y_live_mtr = y;
+  y += g_fh;
+  int y_live_panic = y;
+  y += g_fh;
+  int y_live_time = y;
+  y += g_fh;
 
   // init controller start cell = A5 F5
   curA = 4;
@@ -915,12 +1214,20 @@ int main(void)
   prevA = curA;
   prevF = curF;
   lastMoveDir = 0;
+  g_algo_start_ms = now_msec();
+  g_calm_reached = 0;
+  g_calm_elapsed_ms = 0;
 
   // init on-screen log area *below* HUD, stay inside screen
   g_log_x = x;
-  g_log_y_start = y_live_mtr + 2 * g_fh;
-  if (g_log_y_start > DISPLAY_HEIGHT - g_fh)
-    g_log_y_start = DISPLAY_HEIGHT - g_fh;
+  g_log_y_start = y + g_fh; // y is already advanced past the reserved HUD rows
+
+  // controller log region ends at bottom of screen (leave everything else unchanged)
+  g_log_y_end = DISPLAY_HEIGHT - 2;
+
+  if (g_log_y_start > g_log_y_end - g_fh)
+    g_log_y_start = g_log_y_end - g_fh;
+
   g_log_y = g_log_y_start;
   g_log_enabled = 1;
 
@@ -942,24 +1249,47 @@ int main(void)
       controller_step((int)last_bpm, (int)last_cry);
     }
 
-    // 3) HUD update
+    // 3) HUD update and clear
     clear_text_line(&g_disp, y_live_hb, g_fh, RGB_BLACK);
     clear_text_line(&g_disp, y_live_cry, g_fh, RGB_BLACK);
+    clear_text_line(&g_disp, y_live_mode, g_fh, RGB_BLACK);
+    clear_text_line(&g_disp, y_live_cell, g_fh, RGB_BLACK);
     clear_text_line(&g_disp, y_live_mtr, g_fh, RGB_BLACK);
+    clear_text_line(&g_disp, y_live_panic, g_fh, RGB_BLACK);
+    clear_text_line(&g_disp, y_live_time, g_fh, RGB_BLACK);
 
-    char buf[64], num[16];
+    char buf[96], num[16];
 
+    // HB
     strcpy(buf, "[HB] bpm=");
     itoa_u(last_bpm, num);
     strcat(buf, num);
     draw_text(&g_disp, g_fx, x, y_live_hb, buf, RGB_WHITE);
 
+    // CRY
     strcpy(buf, "[C] cry=");
     itoa_u(last_cry, num);
     strcat(buf, num);
     strcat(buf, "%");
     draw_text(&g_disp, g_fx, x, y_live_cry, buf, RGB_WHITE);
 
+    // MODE (uses is_crying_activated)
+    if (is_crying_activated)
+      strcpy(buf, "[MODE] CRY driven");
+    else
+      strcpy(buf, "[MODE] HB driven");
+    draw_text(&g_disp, g_fx, x, y_live_mode, buf, RGB_YELLOW);
+
+    // CELL (curA/curF)
+    strcpy(buf, "[CTRL] Decided Cell: A");
+    itoa_u((unsigned)(curA + 1), num);
+    strcat(buf, num);
+    strcat(buf, " F");
+    itoa_u((unsigned)(curF + 1), num);
+    strcat(buf, num);
+    draw_text(&g_disp, g_fx, x, y_live_cell, buf, RGB_CYAN);
+
+    // MOTOR (g_amp/g_freq)
     strcpy(buf, "[MOTOR] A:");
     itoa_u(g_amp, num);
     strcat(buf, num);
@@ -969,22 +1299,36 @@ int main(void)
     strcat(buf, "%");
     draw_text(&g_disp, g_fx, x, y_live_mtr, buf, RGB_WHITE);
 
+    // PANIC
+    strcpy(buf, "[PANIC] ");
+    strcat(buf, panic_mode ? "TRIGGERED" : "NOT TRIGGERED");
+    draw_text(&g_disp, g_fx, x, y_live_panic, buf, panic_mode ? RGB_RED : RGB_GREEN);
+
+    // TIME (and CALM marker)
+    int elapsed_ms = g_calm_reached ? g_calm_elapsed_ms : (int)(now_msec() - g_algo_start_ms);
+    char tbuf[8];
+    fmt_mmss(elapsed_ms, tbuf);
+
+    strcpy(buf, "[TIME] ");
+    strcat(buf, tbuf);
+    strcat(buf, g_calm_reached ? " (CALM)" : "");
+    draw_text(&g_disp, g_fx, x, y_live_time, buf, g_calm_reached ? RGB_GREEN : RGB_WHITE);
+
     // Real-life reaction delay:
-    // If motor missing, keep loop fast for debugging
     // If crying-based regime: short delay (4 s)
     // If heartbeat-based regime: long delay (10 s) to respect TAU
     int delay_ms;
-    if (!mtr_ok)
+    if (hit_wall)
     {
-      delay_ms = 200;
+      delay_ms = CONVERGENCE_DELAY;
     }
     else if (is_crying_activated)
     {
-      delay_ms = CRYING_DELAY_MS;
+      delay_ms = CRYING_DELAY;
     }
     else
     {
-      delay_ms = HEARTBEAT_DELAY_MS;
+      delay_ms = HEARTBEAT_DELAY;
     }
 
     sleep_msec(delay_ms);
