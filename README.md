@@ -38,6 +38,7 @@ Duty cycle **> 90%** triggers a cradle warning/emergency indicator and must be a
 ## Architecture
 
 This repo is organized into **four embedded submodules** plus a **simulation/test** area:
+.
 ├── decision/ # MASTER / decision-making controller (runs on PYNQ)
 ├── heartbeat/ # HEARTBEAT sensor module (wrist LED -> BPM estimate) (runs on PYNQ)
 ├── crying/ # CRYING sensor module (mic loudness -> crying metric) (runs on PYNQ)
