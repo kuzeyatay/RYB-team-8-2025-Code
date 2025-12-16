@@ -31,7 +31,7 @@ Both Frequency and Amplitude are **quantized into 5 regions** based on PWM duty-
 | 4 | ~60% | 0.65 | 40 |
 | 5 | ~80% | 0.80 | 50 |
 
-Duty cycle **> 90%** triggers a cradle warning/emergency indicator and must be avoided. :contentReference[oaicite:4]{index=4}
+Duty cycle **> 90%** triggers a cradle warning/emergency indicator and must be avoided.
 
 ---
 
@@ -70,11 +70,11 @@ Nodes communicate using a lightweight **UART “ring” protocol**:
    - Crying module estimates loudness/cry-level from microphone conditioning.
 
 2. **Detect improvement vs. worsening**
-   - Crying reacts quickly; heartbeat is delayed by τ seconds, so both signals are used to reduce false decisions. :contentReference[oaicite:8]{index=8}
+   - Crying reacts quickly; heartbeat is delayed by τ seconds, so both signals are used to reduce false decisions. 
 
 3. **Select next (A, F)**
    - We operate in the discrete 5×5 grid of amplitude/frequency regions.
-   - The “inverse model” behavior is column-based (K-matrix style); the correct path is found by testing moves and keeping changes that improve the observed outputs. :contentReference[oaicite:9]{index=9}
+   - The “inverse model” behavior is column-based (K-matrix style); the correct path is found by testing moves and keeping changes that improve the observed outputs. 
 
 4. **Drive cradle**
    - Motor module outputs the required **1 kHz PWM** for A and F and converts logic-level control to **12 V / 0.8 A** compatible actuation via a driver stage. 
