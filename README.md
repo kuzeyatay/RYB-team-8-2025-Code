@@ -1,7 +1,7 @@
 # RYB-team-8-2025-Code
 # Rock Your Baby — Team 8 (2025) — Final Code
 
-This repository contains our **Rock-Your-Baby (RYB)** controller implementation. The system closes the loop around the TU/e “cradle chair” technical model: it **reads baby-state indicators** (heartbeat + crying loudness) and **drives the cradle** (amplitude + frequency) using PWM signals, with the goal of **reducing the simulated baby’s internal stress level** over time.
+This repository contains our **Rock-Your-Baby (RYB)** controller implementation. The system **reads baby-state indicators** (heartbeat + crying loudness) and **drives the cradle** (amplitude + frequency) using PWM signals, with the goal of **reducing the simulated baby’s internal stress level** over time.
 
 ---
 
