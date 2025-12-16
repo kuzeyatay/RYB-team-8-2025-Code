@@ -112,7 +112,7 @@ This is a real lab set-up that can be damaged by misuse. At minimum:
 4. Confirm that:
    - Heartbeat and crying values update,
    - Motor receives (A,F) commands and outputs stable 1 kHz PWM,
-   - Duty cycles stay within the valid region bands (never > 90%). :contentReference[oaicite:14]{index=14}
+   - Duty cycles stay within the valid region bands (never > 90%).
 
 ---
 
