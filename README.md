@@ -39,11 +39,12 @@ Duty cycle **> 90%** triggers a cradle warning/emergency indicator and must be a
 
 This repo is organized into **four embedded submodules** plus a **simulation/test** area:
 .
-├── decision/ # MASTER / decision-making controller (runs on PYNQ)
-├── heartbeat/ # HEARTBEAT sensor module (wrist LED -> BPM estimate) (runs on PYNQ)
-├── crying/ # CRYING sensor module (mic loudness -> crying metric) (runs on PYNQ)
-├── motor/ # MOTOR driver module (A/F commands -> 1kHz PWM outputs) (runs on PYNQ)
-└── sim/ # Simulation / Simulation created with expected baby behavior to test control logic (runs on pc)
+├── decision/    # MASTER / decision-making controller (runs on PYNQ)
+├── heartbeat/   # HEARTBEAT sensor module (wrist LED → BPM estimate, runs on PYNQ)
+├── crying/      # CRYING sensor module (microphone loudness → crying metric, runs on PYNQ)
+├── motor/       # MOTOR driver module (amplitude/frequency commands → 1 kHz PWM outputs, runs on PYNQ)
+└── sim/         # Simulation environment with expected baby behavior to test control logic (runs on PC)
+
 
 
 ### Communications model: UART ring protocol
