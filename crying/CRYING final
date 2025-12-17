@@ -1,3 +1,9 @@
+//IMPORTANT
+#define CRYING_PIN ADC4
+// SWITCH ONE AWAY THE SCREEN FOR DEMO
+// TOWARD THE SCREEN FOR TEST
+// hold BUTTON 0 until MAXVOLTAGE goes away to reset maxvoltage
+//end important
 // crying module
 #include <libpynq.h>
 #include <stdint.h>
@@ -118,6 +124,7 @@ static void draw_line(display_t *d, FontxFile *fx, int x, int y, const char *s, 
 
   draws the inputted text on the display.
   */
+
   displayDrawString(d, fx, x, y, (uint8_t *)s, col);
 }
 
@@ -254,10 +261,11 @@ static int receive_message(void)
 
 float measureMaxVoltage(int samples)
 {
+    //returns the maximum voltage in the samples.
     float highestVoltage = 0;
     for (int i = 0; i < samples; i++) 
     {
-        float vin = adc_read_channel(ADC4);
+        float vin = adc_read_channel(CRYING_PIN);
         if (vin > highestVoltage)
         {
             highestVoltage = vin;
@@ -265,6 +273,14 @@ float measureMaxVoltage(int samples)
         sleep_msec(TIME_BETWEEN_SAMPLES_MS);
     }
     return highestVoltage;
+}
+
+int cryingVolume(float maxVolume)
+{
+  // returns a percentage volume measured relative to the first calibrations sample.
+  float highestVoltage = measureMaxVoltage(SAMPLES);
+  float VolumePercentage = clampi(100*(highestVoltage / maxVolume), 0, 100);
+  return VolumePercentage;
 }
 
 int main(void)
@@ -290,41 +306,54 @@ int main(void)
   GetFontx(fx, 0, glyph, &fw, &fh);
   displaySetFontDirection(&g_disp, TEXT_DIRECTION0);
 
+  
   // interface you see at boot
   int x = 6, y = fh * 1;
   draw_line(&g_disp, fx, x, y, "CRYING MODULE", RGB_GREEN);
   y += fh;
   draw_line(&g_disp, fx, x, y, "Waiting for 'C'/'A'/'R'...", RGB_WHITE);
   y += fh;
-  int y_val = y;
+  int y_val = y +fh;
   y += fh;
 
+
   adc_init();
+  // takes an initial sample to determine max volume.
   float maxVolume = measureMaxVoltage(START_SAMPLES);
-  printf("Max Volume = %f\n", maxVolume);
+
+  printf("Max Volume = %.3f\n", maxVolume);
+  char buf2[32], num2[16];
+  strcpy(buf2, "MAX INPUT VOLTAGE="); // string copy
+  itoa_u(maxVolume*1000, num2);
+  strcat(buf2, num2); // string combine
+  strcat(buf2, " mV"); // string combine
+  draw_line(&g_disp, fx, x, y_val-fh, buf2, RGB_WHITE);
+
+
 
   // ---- state ----
   uint8_t cry = 0;
   uint8_t prev_cry = 0;
   uint32_t tick = 0;
-  int prev_b0 = 0, prev_b1 = 0;
 
   while (1)
   {
     prev_cry = cry;
-    // NEW: rising-edge button handling
-    int b0 = get_button_state(0);
-    int b1 = get_button_state(1);
-    if (b0 && !prev_b0)
+    int button_state = get_button_state(0);
+    if (button_state)
     {
-      cry = 20;
-    } // B0 pressed -> 20%
-    if (b1 && !prev_b1)
-    {
-      cry = 50;
-    } // B1 pressed -> 50%
-    prev_b0 = b0;
-    prev_b1 = b1;
+      clear_line(&g_disp, y_val-fh, fh, RGB_BLACK);
+      maxVolume = measureMaxVoltage(START_SAMPLES);
+
+      printf("Max Volume = %.3f\n", maxVolume);
+      char buf3[32], num3[16];
+      strcpy(buf3, "MAX INPUT VOLTAGE="); // string copy
+      itoa_u(maxVolume*1000, num3);
+      strcat(buf3, num3); // string combine
+      strcat(buf3, " mV"); // string combine
+      draw_line(&g_disp, fx, x, y_val-fh, buf3, RGB_WHITE);
+      wait_until_button_released(0);
+    }
 
 
     if (get_switch_state(1) == 1)
@@ -365,10 +394,8 @@ int main(void)
             }
             else if (cmd == 'C')
             {
-                float highestVoltage = measureMaxVoltage(SAMPLES);
-                float VolumePercentage = 100*(highestVoltage / maxVolume);
-                cry = VolumePercentage;
-
+                // calculate and send crying percentage
+                cry = cryingVolume(maxVolume);
                 uint8_t rsp[] = {'C', cry};
                 send_message(MSTR, CRY, rsp);
             }
@@ -377,11 +404,9 @@ int main(void)
     }
     else
     {
-        float highestVoltage = measureMaxVoltage(SAMPLES);
-        float VolumePercentage = 100*(highestVoltage / maxVolume);
-        cry = VolumePercentage;
-        
-        printf("%.1f\n", VolumePercentage);
+      // test setup
+        cry = cryingVolume(maxVolume);
+        printf("%i\n", cry);
         sleep_msec(10);
     }
 
