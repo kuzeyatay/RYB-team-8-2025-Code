@@ -556,7 +556,7 @@ static void controller_step(int bpm_now, int cry_now)
     {
       if (bpm_delta <= 3) // then we consider the state “stable” if BPM changed by at most 3 beats since the last step.
       {
-        log_printf("[A] HB stable ΔBPM=%d\n", bpm_delta);
+        log_printf("[A] HB stable Del(BPM)=%d\n", bpm_delta);
         if (lastMoveDir == 1) // If the last move we made on the grid was a LEFT move (direction 1),
           same = 1;           // we set same to 1, meaning we have a “stable after LEFT” pattern that we will react to with a special move i call reverse diagonal later.
       }
