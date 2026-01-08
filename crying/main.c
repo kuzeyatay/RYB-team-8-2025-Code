@@ -333,7 +333,9 @@ int main(void)
 
   draw_line(&g_disp, fx, x, y, "CRYING MODULE", RGB_GREEN);
   y += fh;
-  
+  draw_line(&g_disp, fx, x, y, "Waiting for 'C'/'A'/'R'...", RGB_WHITE);
+  y += fh;
+
 
   int y_adc = y; y += fh;
   int y_p2p = y; y += fh;
