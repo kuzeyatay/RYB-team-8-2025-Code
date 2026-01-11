@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #define UART_CH UART0
 #define MSTR 0
@@ -29,6 +30,10 @@
 #define CAL_MAX_MS 5000               // 5 s loud playback
 #define CAL_BASELINE_SAMPLES (CAL_BASELINE_MS / TIME_BETWEEN_SAMPLES_MS)
 #define CAL_MAX_SAMPLES (CAL_MAX_MS / TIME_BETWEEN_SAMPLES_MS)
+
+// NEW: Gap between QUIET and LOUD calibration (ms)
+#define CAL_GAP_MS 3000               // delay between quiet and loud (increase if you want)
+#define CAL_GAP_TICK_MS 250           // LCD update rate during gap
 
 // global display so handler can access it
 static display_t g_disp;
@@ -304,6 +309,47 @@ static float measureMaxP2P(int total_samples)
   return avg_top5;
 }
 
+// NEW: in-between calibration screen (countdown) between QUIET and LOUD
+static void show_cal_gap_screen(display_t *d, FontxFile *fx, int x, int y, uint8_t fh, int gap_ms)
+{
+  int remaining = gap_ms;
+
+  while (remaining > 0)
+  {
+    clear_line(d, y, fh, RGB_BLACK);
+    draw_line(d, fx, x, y, "Calib: SWITCHING...", RGB_YELLOW);
+
+    clear_line(d, y + fh, fh, RGB_BLACK);
+    char buf[40], num[16];
+    strcpy(buf, "Starting LOUD in ");
+    itoa_u((unsigned)((remaining + 999) / 1000), num); // seconds
+    strcat(buf, num);
+    strcat(buf, "s");
+    draw_line(d, fx, x, y + fh, buf, RGB_WHITE);
+
+    sleep_msec(CAL_GAP_TICK_MS);
+    remaining -= CAL_GAP_TICK_MS;
+  }
+
+  clear_line(d, y + fh, fh, RGB_BLACK);
+}
+
+static void restart_program(void)
+{
+    // Prevent Ctrl+C during restart teardown/exec
+    signal(SIGINT, SIG_IGN);
+
+    // Optional: clear screen as a UX cue
+    displayFillScreen(&g_disp, RGB_BLACK);
+
+    // Execute self
+    execl("/proc/self/exe", "/proc/self/exe", (char*)NULL);
+
+    // If execl returns, it failed
+    perror("execl failed");
+    _exit(127);
+}
+
 int main(void)
 {
   signal(SIGINT, handle_sigint);
@@ -316,6 +362,8 @@ int main(void)
   switchbox_set_pin(IO_AR1, SWB_UART0_TX);
   buttons_init();
   switches_init();
+
+  static int restart_hold_ms = 0;
 
   // ---- Display init ----
   display_init(&g_disp);
@@ -336,7 +384,6 @@ int main(void)
   draw_line(&g_disp, fx, x, y, "Waiting for 'C'/'A'/'R'...", RGB_WHITE);
   y += fh;
 
-
   int y_adc = y; y += fh;
   int y_p2p = y; y += fh;
   int y_pct = y; y += fh;
@@ -347,6 +394,10 @@ int main(void)
   clear_line(&g_disp, y_adc, fh, RGB_BLACK);
   draw_line(&g_disp, fx, x, y_adc, "Calib: QUIET...", RGB_YELLOW);
   g_p2p_quiet = measureQuietP2P(CAL_BASELINE_SAMPLES);
+
+  // NEW: longer delay + in-between LCD state
+  clear_line(&g_disp, y_adc, fh, RGB_BLACK);
+  show_cal_gap_screen(&g_disp, fx, x, y_adc, fh, CAL_GAP_MS);
 
   clear_line(&g_disp, y_adc, fh, RGB_BLACK);
   draw_line(&g_disp, fx, x, y_adc, "Calib: LOUD...", RGB_YELLOW);
@@ -371,6 +422,39 @@ int main(void)
   while (1)
   {
     cry_sampler_update();
+
+    // ---- Button overrides for crying percentage ----
+    // B1 => 70%, B2 => 40% (holding the button forces the value)
+    // NOTE: If your board uses different indices for B1/B2, change 1 and 2 accordingly.
+    int b1 = get_button_state(1);
+    int b2 = get_button_state(2);
+
+    if (b1)
+    {
+      g_latest_pct = 70.0f;
+      g_latest_cry = 70;
+    }
+    else if (b2)
+    {
+      g_latest_pct = 40.0f;
+      g_latest_cry = 40;
+    }
+
+    // Button 3 = RESTART (long press ~1s)
+    // Note: shares button 3 with other uses; short press is ignored here, long press restarts.
+    int b3 = get_button_state(3);
+    if (b3)
+    {
+      restart_hold_ms += 20;
+      if (restart_hold_ms >= 1000)
+      {
+        restart_program();
+      }
+    }
+    else
+    {
+      restart_hold_ms = 0;
+    }
 
     // UI refresh
     uint32_t now = now_msec_u32();
@@ -398,44 +482,43 @@ int main(void)
       strcat(bufB, "mV");
       draw_line(&g_disp, fx, x, y_p2p, bufB, RGB_CYAN);
 
-      // PCT
+      // PCT (show override source)
       clear_line(&g_disp, y_pct, fh, RGB_BLACK);
-      char bufP[32], numP[16];
+      char bufP[40], numP[16];
       strcpy(bufP, "PCT=");
       itoa_u((unsigned)g_latest_cry, numP);
       strcat(bufP, numP);
       strcat(bufP, "%");
+      
       draw_line(&g_disp, fx, x, y_pct, bufP, RGB_WHITE);
     }
 
-   
-      // UART mode
-      int r = receive_message();
-      if (r > 0 && g_len >= 1)
-      {
-        uint8_t cmd = g_payload[0];
+    // UART mode
+    int r = receive_message();
+    if (r > 0 && g_len >= 1)
+    {
+      uint8_t cmd = g_payload[0];
 
-        if (cmd == 'A')
-        {
-          uint8_t rsp[] = {'A'};
-          SEND_MESSAGE(MSTR, CRY, rsp);
-        }
-        else if (cmd == 'R')
-        {
-          uint8_t v = (uint8_t)((tick * 97u + 13u) & 0xFFu);
-          tick++;
-          uint8_t rsp[] = {'R', v};
-          SEND_MESSAGE(MSTR, CRY, rsp);
-        }
-        else if (cmd == 'C')
-        {
-          uint8_t rsp[] = {'C', g_latest_cry};
-          SEND_MESSAGE(MSTR, CRY, rsp);
-        }
+      if (cmd == 'A')
+      {
+        uint8_t rsp[] = {'A'};
+        SEND_MESSAGE(MSTR, CRY, rsp);
       }
-      sleep_msec(2);
-    
-    
+      else if (cmd == 'R')
+      {
+        uint8_t v = (uint8_t)((tick * 97u + 13u) & 0xFFu);
+        tick++;
+        uint8_t rsp[] = {'R', v};
+        SEND_MESSAGE(MSTR, CRY, rsp);
+      }
+      else if (cmd == 'C')
+      {
+        uint8_t rsp[] = {'C', g_latest_cry};
+        SEND_MESSAGE(MSTR, CRY, rsp);
+      }
+    }
+
+    sleep_msec(2);
   }
 
   display_destroy(&g_disp);
