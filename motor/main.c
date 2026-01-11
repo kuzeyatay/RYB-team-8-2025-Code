@@ -1,6 +1,6 @@
 // motor.c  — Address 3 (MOTOR)
 // Ring frame: [DST][SRC][LEN][PAYLOAD...]
-// Motor only receives values meant for it and never replies.
+// Motor receives values meant for it.
 // It forwards frames that are NOT for it.
 
 #include <libpynq.h>
@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <buttons.h> // <-- adjust include if needed
+#include <unistd.h>
 
 #define UART_CH UART0
 #define MSTR 0
@@ -68,8 +69,10 @@ static void itoa_u(unsigned v, char *out)
 // --- display helpers ---
 static inline int clampi(int v, int lo, int hi)
 {
-  if (v < lo) return lo;
-  if (v > hi) return hi;
+  if (v < lo)
+    return lo;
+  if (v > hi)
+    return hi;
   return v;
 }
 
@@ -80,7 +83,8 @@ static void clear_line(display_t *d, int y, int h, uint16_t bg)
   x2 = clampi(x2, 0, DISPLAY_WIDTH - 1);
   y1 = clampi(y1, 0, DISPLAY_HEIGHT - 1);
   y2 = clampi(y2, 0, DISPLAY_HEIGHT - 1);
-  if (x2 < x1 || y2 < y1) return;
+  if (x2 < x1 || y2 < y1)
+    return;
   displayDrawFillRect(d, x1, y1, x2, y2, bg);
 }
 
@@ -88,10 +92,14 @@ static void clear_line(display_t *d, int y, int h, uint16_t bg)
 static void draw_line(display_t *d, FontxFile *fx, int x, int y, const char *s, uint16_t col)
 {
   char buf[64];
+
   int fw = (g_fw == 0) ? 8 : g_fw;
   int max_chars = (DISPLAY_WIDTH - x) / fw;
-  if (max_chars <= 0) return;
-  if (max_chars > (int)(sizeof(buf) - 1)) max_chars = sizeof(buf) - 1;
+  if (max_chars <= 0)
+    return;
+
+  if (max_chars > (int)(sizeof(buf) - 1))
+    max_chars = sizeof(buf) - 1;
 
   int n = 0;
   while (n < max_chars && s[n] != '\0')
@@ -100,7 +108,34 @@ static void draw_line(display_t *d, FontxFile *fx, int x, int y, const char *s, 
     n++;
   }
   buf[n] = '\0';
+
   displayDrawString(d, fx, x, y, (uint8_t *)buf, col);
+}
+
+// NEW: draw a rectangular outline around one text-line band
+static void draw_frame_for_line(display_t *d, int x, int y, int fh, uint16_t col)
+{
+  // Match clear_line geometry so frame hugs the same band
+  int x1 = x - 2;
+  int y1 = y - fh + 2;
+  int x2 = DISPLAY_WIDTH - 8; // right margin so it doesn't touch the edge
+  int y2 = y + 2;
+
+  x1 = clampi(x1, 0, DISPLAY_WIDTH - 1);
+  x2 = clampi(x2, 0, DISPLAY_WIDTH - 1);
+  y1 = clampi(y1, 0, DISPLAY_HEIGHT - 1);
+  y2 = clampi(y2, 0, DISPLAY_HEIGHT - 1);
+  if (x2 <= x1 || y2 <= y1)
+    return;
+
+  // If your libpynq lacks displayDrawRect, replace this with 4 lines (see below)
+  displayDrawRect(d, x1, y1, x2, y2, col);
+
+  // Fallback (uncomment if displayDrawRect is missing):
+  // displayDrawLine(d, x1, y1, x2, y1, col);
+  // displayDrawLine(d, x2, y1, x2, y2, col);
+  // displayDrawLine(d, x2, y2, x1, y2, col);
+  // displayDrawLine(d, x1, y2, x1, y1, col);
 }
 
 // --- UART helpers ---
@@ -110,7 +145,9 @@ static int timeouted_byte(int ms)
   while (waited < ms)
   {
     if (uart_has_data(UART_CH))
+    {
       return (int)uart_recv(UART_CH);
+    }
     sleep_msec(1);
     waited += 1;
   }
@@ -124,24 +161,27 @@ static uint8_t g_src = 0;
 static uint8_t g_len = 0;
 static uint8_t g_payload[MAX_PAY];
 
-// Receive one frame; forward if not for MTR.
-// Return payload length (>0) if for MTR, 0 if forwarded, <0 on timeout/error.
 // UPDATED: Now non-blocking. Returns -1 immediately if no data.
 static int receive_message(void)
 {
   if (!uart_has_data(UART_CH))
+  {
     return -1;
+  }
 
   int b = receive_byte(); // DST
-  if (b < 0) return -1;
+  if (b < 0)
+    return -1;
   uint8_t dst = (uint8_t)b;
 
   b = receive_byte(); // SRC
-  if (b < 0) return -1;
+  if (b < 0)
+    return -1;
   uint8_t src = (uint8_t)b;
 
   b = receive_byte(); // LEN
-  if (b < 0) return -1;
+  if (b < 0)
+    return -1;
   uint8_t len = (uint8_t)b;
 
   // Forward if not for me
@@ -153,18 +193,22 @@ static int receive_message(void)
     for (int i = 0; i < len; i++)
     {
       int pb = receive_byte();
-      if (pb < 0) return -2;
+      if (pb < 0)
+        return -2;
       uart_send(UART_CH, (uint8_t)pb);
     }
     return 0;
   }
 
-  // Receive payload (for me)
-  if (len > MAX_PAY) len = MAX_PAY;
+  // Receive for me
+  if (len > MAX_PAY)
+    len = MAX_PAY;
+
   for (int i = 0; i < len; i++)
   {
     b = receive_byte();
-    if (b < 0) return -3;
+    if (b < 0)
+      return -3;
     g_payload[i] = (uint8_t)b;
   }
 
@@ -174,172 +218,138 @@ static int receive_message(void)
 }
 
 // [DST][SRC][LEN][PAYLOAD]
-static void send_message_frame(uint8_t dst, uint8_t src, const uint8_t payload[], uint8_t len)
+static void send_message_impl(uint8_t dst, uint8_t src, const uint8_t payload[], uint8_t len)
 {
   uart_send(UART_CH, dst);
   uart_send(UART_CH, src);
   uart_send(UART_CH, len);
   for (int i = 0; i < len; i++)
+  {
     uart_send(UART_CH, payload[i]);
-}
-
-// convenience macro for fixed-size payload arrays
-#define SEND_MESSAGE(dst, src, payload_arr) \
-  send_message_frame((dst), (src), (payload_arr), (uint8_t)sizeof(payload_arr))
-
-// ---------------- TABLE-CORRECT MAPPINGS ----------------
-//
-// Region 1..5:
-// Duty Cycle Input Range: 0–10, 10–30, 30–50, 50–70, 70–90  (range label only)
-// Frequency (Hz):         0.20, 0.35, 0.50, 0.65, 0.70
-// Amplitude (%):          20,   40,   60,   80,   100
-//
-static int amp_region_to_percent(int region_1to5)
-{
-  switch (region_1to5)
-  {
-    case 1: return 20;
-    case 2: return 40;
-    case 3: return 60;
-    case 4: return 80;
-    case 5: return 100;
-    default: return 20;
   }
 }
 
-static int freq_region_to_hz_x100(int region_1to5)
+#define send_message(dst, src, payload) \
+  send_message_impl(dst, src, payload, (uint8_t)sizeof(payload))
+
+// region 1..5 -> midpoint %
+static int region_mid_duty(int r)
 {
-  // Hz * 100 to avoid floats: 0.20->20, 0.35->35, ...
-  switch (region_1to5)
+  switch (r)
   {
-    case 1: return 20;
-    case 2: return 35;
-    case 3: return 50;
-    case 4: return 65;
-    case 5: return 70;
-    default: return 20;
+  case 1:
+    return 5;
+  case 2:
+    return 20;
+  case 3:
+    return 40;
+  case 4:
+    return 60;
+  case 5:
+    return 80;
+  default:
+    return 5;
   }
 }
 
-// Safety check: percent in [0..100]
+// idx 0..4 -> midpoint %
+static int idx_to_percent(uint8_t idx)
+{
+  if (idx > 4)
+    idx = 4;
+  return region_mid_duty((int)idx + 1);
+}
+
+// Safety check for duty cycle in percent
 static void set_pwm_percent(int channel, int percent)
 {
   (void)channel;
-  if (percent < 0 || percent > 100)
+  if (percent > 90)
   {
-    printf("[EMERGENCY] percent=%d out of [0..100]\n", percent);
     exit(1);
   }
 }
 
-// Build: "A_IDX=5 (100%)" where idx shown is region (1..5)
-static void make_amp_line(const char *label, uint8_t region_1to5, char *out, size_t out_sz)
-{
-  char n1[16], n2[16];
-
-  if (region_1to5 < 1) region_1to5 = 1;
-  if (region_1to5 > 5) region_1to5 = 5;
-
-  out[0] = '\0';
-  strncat(out, label, out_sz - 1);
-
-  itoa_u(region_1to5, n1);
-  strncat(out, n1, out_sz - strlen(out) - 1);
-
-  strncat(out, " (", out_sz - strlen(out) - 1);
-
-  itoa_u((unsigned)amp_region_to_percent(region_1to5), n2);
-  strncat(out, n2, out_sz - strlen(out) - 1);
-
-  strncat(out, "%)", out_sz - strlen(out) - 1);
-}
-
-// Build: "F_IDX=5 (0.70Hz)" where idx shown is region (1..5)
-static void make_freq_line(const char *label, uint8_t region_1to5, char *out, size_t out_sz)
-{
-  char n1[16], nHz[16];
-
-  if (region_1to5 < 1) region_1to5 = 1;
-  if (region_1to5 > 5) region_1to5 = 5;
-
-  int hz_x100 = freq_region_to_hz_x100(region_1to5);
-
-  out[0] = '\0';
-  strncat(out, label, out_sz - 1);
-
-  itoa_u(region_1to5, n1);
-  strncat(out, n1, out_sz - strlen(out) - 1);
-
-  strncat(out, " (0.", out_sz - strlen(out) - 1);
-
-  // Always 2 digits after decimal for your values (20,35,50,65,70)
-  itoa_u((unsigned)hz_x100, nHz);
-  strncat(out, nHz, out_sz - strlen(out) - 1);
-
-  strncat(out, "Hz)", out_sz - strlen(out) - 1);
-}
-
-// Apply frequency output (square wave) using PWM period.
-// Assumes PWM timebase is 10 ns per tick (consistent with your 1kHz example).
-static void set_freq_pwm_from_hz_x100(int hz_x100)
-{
-  if (hz_x100 < 1) hz_x100 = 1; // avoid divide-by-zero
-
-  // f = hz_x100 / 100.0
-  // period_seconds = 1/f = 100 / hz_x100
-  // ticks = period_seconds / 10ns = (100 / hz_x100) / 1e-8 = 1e10 / hz_x100
-  // 1e10 fits in uint64_t; result fits uint32_t for hz_x100 >= 1.
-  uint64_t ticks64 = (uint64_t)10000000000ULL / (uint64_t)hz_x100;
-  if (ticks64 < 2) ticks64 = 2; // minimum sane
-  if (ticks64 > 0xFFFFFFFFULL) ticks64 = 0xFFFFFFFFULL;
-
-  uint32_t period_ticks = (uint32_t)ticks64;
-
-  // Re-init PWM1 with the new period (drop-in approach)
-  pwm_init(FREQ_PWM, period_ticks);
-
-  // 50% duty square wave at desired frequency
-  pwm_set_duty_cycle(FREQ_PWM, period_ticks / 2);
-}
-
-// amp_index, freq_index are 0..4 (matrix indices for A/F).
-// We map index -> region (1..5) -> amplitude% and frequency Hz per TABLE.
+// Set PWM from indices 0..4
 static void command_motor(int amp_index, int freq_index)
 {
   if (amp_index < 0 || amp_index > 4 || freq_index < 0 || freq_index > 4)
   {
-    printf("[SYSTEM][ERROR] command_motor out-of-bounds A%d F%d\n",
-           amp_index + 1, freq_index + 1);
     return;
   }
 
-  int a_region = amp_index + 1;  // 1..5
-  int f_region = freq_index + 1; // 1..5
+  int dutyA = region_mid_duty(amp_index + 1);
+  int dutyF = region_mid_duty(freq_index + 1);
 
-  int amp_pct = amp_region_to_percent(a_region);   // 20..100
-  int hz_x100 = freq_region_to_hz_x100(f_region);  // 20..70  (0.20..0.70 Hz)
+  set_pwm_percent(AMP_CH, dutyA);
+  set_pwm_percent(FREQ_CH, dutyF);
 
-  // Safety checks (now aligned to table’s 100% amplitude)
-  set_pwm_percent(AMP_CH, amp_pct);
-  // Frequency channel not a "%", so no percent safety check here.
-
-  // --- Amplitude PWM (keep your existing 1 kHz carrier) ---
-  uint32_t amp_period = 100000; // 1 ms period at 10 ns ticks => 1 kHz
-  pwm_init(AMP_PWM, amp_period);
-  pwm_set_duty_cycle(AMP_PWM, (uint32_t)(amp_period * (uint32_t)amp_pct / 100U));
-
-  // --- Frequency output PWM (square wave at 0.20..0.70 Hz) ---
-  set_freq_pwm_from_hz_x100(hz_x100);
+  uint32_t period = 100000; // 1 kHz
+  pwm_set_duty_cycle(AMP_PWM, (uint32_t)(period * dutyA / 100));
+  pwm_set_duty_cycle(FREQ_PWM, (uint32_t)(period * dutyF / 100));
 }
 
+
+
+// Draw A and F lines with percentages + framed outlines
+static void draw_af_lines(display_t *d, FontxFile *fx, int x, int y_amp, int y_freq,
+                          uint8_t amp_idx, uint8_t freq_idx, uint16_t color, uint16_t bg, int fh)
+{
+  clear_line(d, y_amp, fh, bg);
+  clear_line(d, y_freq, fh, bg);
+
+  int a_pct = idx_to_percent(amp_idx);
+  int f_pct = idx_to_percent(freq_idx);
+
+  char buf[64], num[16];
+
+  strcpy(buf, "A_IDX=");
+  itoa_u(amp_idx, num);
+  strcat(buf, num);
+  strcat(buf, " (");
+  itoa_u((unsigned)a_pct, num);
+  strcat(buf, num);
+  strcat(buf, "%)");
+  draw_line(d, fx, x, y_amp, buf, color);
+  draw_frame_for_line(d, x, y_amp, fh, color);
+
+  strcpy(buf, "F_IDX=");
+  itoa_u(freq_idx, num);
+  strcat(buf, num);
+  strcat(buf, " (");
+  itoa_u((unsigned)f_pct, num);
+  strcat(buf, num);
+  strcat(buf, "%)");
+  draw_line(d, fx, x, y_freq, buf, color);
+  draw_frame_for_line(d, x, y_freq, fh, color);
+}
+
+// -------- safe exit on Ctrl+C ----------
 static void handle_sigint(int sig __attribute__((unused)))
 {
   displayFillScreen(&disp, RGB_BLACK);
-  printf("\n Exited\n");
+  printf("\nExited\n");
   display_destroy(&disp);
   pynq_destroy();
   exit(0);
 }
+
+static void restart_program(void)
+{
+    // Prevent Ctrl+C during restart teardown/exec
+    signal(SIGINT, SIG_IGN);
+
+    // Optional: clear screen as a UX cue (safe to skip if you suspect display code)
+    displayFillScreen(&disp, RGB_BLACK);
+
+    // Execute self (argv[0] must be non-NULL)
+    execl("/proc/self/exe", "/proc/self/exe", (char*)NULL);
+
+    // If execl returns, it failed
+    perror("execl failed");
+    _exit(127);
+}
+
 
 int main(void)
 {
@@ -358,17 +368,19 @@ int main(void)
   switchbox_set_pin(AMP_PWM_PIN, AMP_PWM_CFG);
   switchbox_set_pin(FREQ_PWM_PIN, FREQ_PWM_CFG);
 
-  // Initialize PWMs to something valid
-  pwm_init(AMP_PWM, 100000);    // 1 kHz carrier (amplitude)
-  pwm_init(FREQ_PWM, 100000);   // placeholder until first command
+  // 1 kHz PWM
+  pwm_init(AMP_PWM, 100000);
+  pwm_init(FREQ_PWM, 100000);
 
   // Buttons init
   buttons_init();
+  static int restart_hold_ms = 0;
 
   // display init
   display_init(&disp);
   display_set_flip(&disp, true, true);
   displayFillScreen(&disp, RGB_BLACK);
+
   FontxFile fx[2];
   uint8_t glyph[FontxGlyphBufSize], fw, fh;
   InitFontx(fx, "/boot/ILGH16XB.FNT", "");
@@ -380,89 +392,60 @@ int main(void)
   int x = 6, y = fh * 1;
   draw_line(&disp, fx, x, y, "MOTOR MODULE", RGB_GREEN);
   y += fh;
-
-  // --- ASCII table ---
-  const char *tbl[] = {
-      "+-------------------+",
-      "   DC%     F(Hz)  A%",
-      "1  0-10    0.2    20",
-      "2  10-30   0.35   40",
-      "3  30-50   0.5    60",
-      "4  50-70   0.65   80",
-      "5  70-90   0.7   100",
-      "+-------------------+",
-  };
-
-  for (unsigned i = 0; i < sizeof(tbl) / sizeof(tbl[0]); i++)
-  {
-    draw_line(&disp, fx, x, y, tbl[i], RGB_WHITE);
-    y += fh;
-  }
-
   draw_line(&disp, fx, x, y, "Waiting for 'M' (A,F)...", RGB_WHITE);
   y += fh;
 
-  int y_amp = y;  y += fh;
-  int y_freq = y; y += fh;
+  sleep_msec(100);
 
-  uint8_t amp_idx = 4;   // 0..4
-  uint8_t freq_idx = 4;  // 0..4
-
-  // Apply initial motor command to match initial indices
+  // --- INITIAL: set motors to 80% / 80% ---
+  uint8_t amp_idx = 4;
+  uint8_t freq_idx = 4;
   command_motor((int)amp_idx, (int)freq_idx);
 
-  // Initial display (show TABLE-correct values)
-  {
-    char buf[64];
+  draw_line(&disp, fx, x, y, "[ALERT] INIT SENT", RGB_YELLOW);
+  y += fh;
 
-    make_amp_line("A_IDX=", (uint8_t)(amp_idx + 1), buf, sizeof(buf));
-    draw_line(&disp, fx, x, y_amp, buf, RGB_YELLOW);
+  y += fh;
+  int y_amp = y;
+  y += fh;
+  int y_freq = y;
+  y += fh;
 
-    make_freq_line("F_IDX=", (uint8_t)(freq_idx + 1), buf, sizeof(buf));
-    draw_line(&disp, fx, x, y_freq, buf, RGB_YELLOW);
-  }
+  // initial display (with frames)
+  draw_af_lines(&disp, fx, x, y_amp, y_freq, amp_idx, freq_idx, RGB_WHITE, RGB_BLACK, fh);
 
-  // button previous states for edge detection (0..3)
+  // --- button previous states for edge detection (0..3) ---
   int prev_b0 = 0, prev_b1 = 0, prev_b2 = 0, prev_b3 = 0;
 
   while (1)
   {
-    // 1) Handle UART messages from master
+    // --- 1) Handle UART messages from master ---
     int r = receive_message();
     if (r > 0 && g_len >= 1)
     {
       uint8_t cmd = g_payload[0];
       if (cmd == 'A')
       {
-        // boot ping reply (if you truly want "never replies", delete this block)
         uint8_t rsp[] = {'A'};
-        SEND_MESSAGE(MSTR, MTR, rsp);
+        send_message(MSTR, MTR, rsp);
       }
       else if (cmd == 'M' && g_len >= 3)
       {
         amp_idx = g_payload[1];
         freq_idx = g_payload[2];
 
-        if (amp_idx > 4) amp_idx = 4;
-        if (freq_idx > 4) freq_idx = 4;
+        if (amp_idx > 4)
+          amp_idx = 4;
+        if (freq_idx > 4)
+          freq_idx = 4;
 
         command_motor((int)amp_idx, (int)freq_idx);
 
-        // refresh display (TABLE-correct)
-        clear_line(&disp, y_amp, fh, RGB_BLACK);
-        clear_line(&disp, y_freq, fh, RGB_BLACK);
-
-        char buf[64];
-
-        make_amp_line("A_IDX=", (uint8_t)(amp_idx + 1), buf, sizeof(buf));
-        draw_line(&disp, fx, x, y_amp, buf, RGB_WHITE);
-
-        make_freq_line("F_IDX=", (uint8_t)(freq_idx + 1), buf, sizeof(buf));
-        draw_line(&disp, fx, x, y_freq, buf, RGB_WHITE);
+        draw_af_lines(&disp, fx, x, y_amp, y_freq, amp_idx, freq_idx, RGB_WHITE, RGB_BLACK, fh);
       }
     }
 
-    // 2) Button controls (4 buttons): A-/A+/F-/F+
+    // --- 2) Button controls (4 buttons): A-/A+/F-/F+ ---
     int b0 = get_button_state(0); // AMP -1
     int b1 = get_button_state(1); // AMP +1
     int b2 = get_button_state(2); // FREQ -1
@@ -470,33 +453,61 @@ int main(void)
 
     bool changed = false;
 
-    if (b0 && !prev_b0) { if (amp_idx > 0) amp_idx--; changed = true; }
-    if (b1 && !prev_b1) { if (amp_idx < 4) amp_idx++; changed = true; }
-    if (b2 && !prev_b2) { if (freq_idx > 0) freq_idx--; changed = true; }
-    if (b3 && !prev_b3) { if (freq_idx < 4) freq_idx++; changed = true; }
+    if (b0 && !prev_b0)
+    {
+      if (amp_idx > 0)
+        amp_idx--;
+      changed = true;
+    }
+    if (b1 && !prev_b1)
+    {
+      if (amp_idx < 4)
+        amp_idx++;
+      changed = true;
+    }
+    if (b2 && !prev_b2)
+    {
+      if (freq_idx > 0)
+        freq_idx--;
+      changed = true;
+    }
+    if (b3 && !prev_b3)
+    {
+      if (freq_idx < 4)
+        freq_idx++;
+      changed = true;
+    }
 
     if (changed)
     {
       command_motor((int)amp_idx, (int)freq_idx);
-
-      clear_line(&disp, y_amp, fh, RGB_BLACK);
-      clear_line(&disp, y_freq, fh, RGB_BLACK);
-
-      char buf[64];
-
-      make_amp_line("A_IDX=", (uint8_t)(amp_idx + 1), buf, sizeof(buf));
-      draw_line(&disp, fx, x, y_amp, buf, RGB_WHITE);
-
-      make_freq_line("F_IDX=", (uint8_t)(freq_idx + 1), buf, sizeof(buf));
-      draw_line(&disp, fx, x, y_freq, buf, RGB_WHITE);
+      draw_af_lines(&disp, fx, x, y_amp, y_freq, amp_idx, freq_idx, RGB_WHITE, RGB_BLACK, fh);
     }
 
-    prev_b0 = b0; prev_b1 = b1; prev_b2 = b2; prev_b3 = b3;
+    prev_b0 = b0;
+    prev_b1 = b1;
+    prev_b2 = b2;
+    prev_b3 = b3;
+
+    // Button 3 = RESTART (long press ~1s)
+    // Note: this shares button 3 with FREQ+. Short press increments freq, long press restarts.
+    if (b3)
+    {
+      restart_hold_ms += 20;
+      if (restart_hold_ms >= 1000)
+      {
+        restart_program();
+      }
+    }
+    else
+    {
+      restart_hold_ms = 0;
+    }
 
     sleep_msec(20);
   }
 
-  // Unreachable normally
+  // Unreachable
   pwm_destroy(AMP_PWM);
   pwm_destroy(FREQ_PWM);
   display_destroy(&disp);
