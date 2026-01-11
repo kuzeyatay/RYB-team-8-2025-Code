@@ -26,6 +26,8 @@
 #define CRYING_DELAY 4000     // ~2 s crying / stress delay
 #define CONVERGENCE_DELAY 4000
 
+#define VITALS_POLL_MS 100 // request HB/CRY every 100ms
+
 // global variables for submodules (live readings)
 static uint8_t last_bpm = 0;
 static uint8_t last_cry = 0;
@@ -218,40 +220,36 @@ void send_message_raw(uint8_t dst, uint8_t src, const uint8_t payload[], uint8_t
 // UPDATED: Now non-blocking. Returns -1 immediately if no data.
 static int receive_message(void)
 {
-  // 1. Check if ANY data is available. If not, return immediately.
-  //    This prevents the 20ms blocking delay every loop.
   if (!uart_has_data(UART_CH))
-  {
     return -1;
-  }
 
-  // 2. Data is confirmed, so we can now safely use the timeout function
-  //    to read the full frame without stalling the main loop unnecessarily.
-  int b = receive_byte(); // Read DST
+  int b = receive_byte(); // DST
   if (b < 0)
     return -1;
   uint8_t dst = (uint8_t)b;
 
-  b = receive_byte(); // Read SRC
+  b = receive_byte(); // SRC
   if (b < 0)
     return -1;
   uint8_t src = (uint8_t)b;
 
-  b = receive_byte(); // Read LEN
+  b = receive_byte(); // LEN
   if (b < 0)
     return -1;
   uint8_t len = (uint8_t)b;
 
-  // Forwarding Logic BUT mstr is eighter the start or end of meesages so it should not forward.
-
+  // If not for me, drain payload so framing stays aligned.
   if (dst != MSTR)
   {
+    for (int i = 0; i < len; i++)
+    {
+      (void)receive_byte(); // ignore; if timeout happens, we just desync less badly than leaving bytes behind
+    }
     return 0;
   }
 
-  // --- Receive Logic (For Me) ---
   if (len > MAX_PAY)
-    len = MAX_PAY; // Safety clamp
+    len = MAX_PAY;
 
   for (int i = 0; i < len; i++)
   {
@@ -263,24 +261,37 @@ static int receive_message(void)
 
   g_src = src;
   g_len = len;
-  return g_len;
+  return (int)g_len;
 }
 
 // Ping / random / sensor / motor commands
 
 // send a ping to a module and expect 'A' back
+#define BOOT_PING_TOTAL_MS 1500 // total time to wait for module to answer
+#define BOOT_PING_RETRY_MS 100  // resend 'A' every 100ms
+
 static int boot_ping(uint8_t dst)
 {
   uint8_t payload[] = {'A'};
-  send_message(dst, MSTR, payload);
+
   int waited = 0;
-  while (waited < TIMEOUT)
+  int since_send = BOOT_PING_RETRY_MS; // force immediate send first iteration
+
+  while (waited < BOOT_PING_TOTAL_MS)
   {
+    if (since_send >= BOOT_PING_RETRY_MS)
+    {
+      send_message(dst, MSTR, payload);
+      since_send = 0;
+    }
+
     int r = receive_message();
     if (r > 0 && g_src == dst && g_len >= 1 && g_payload[0] == 'A')
       return 1;
+
     sleep_msec(1);
     waited += 1;
+    since_send += 1;
   }
   return 0;
 }
@@ -682,7 +693,7 @@ static void controller_step(int bpm_now, int cry_now)
       lastMoveDir = 1;         // We set the last move direction to LEFT again, as we are planning a follow-up LEFT move.
       triedLeftFromAnchor = 1; // We mark that LEFT has been tried from this anchor so we do not keep repeating it forever.
 
-      log_printf("[A] IMPROVED-> try LEFT from A%d F%d\n", anchorA + 1, anchorF + 1); // We log that, because the last move was good, we are going to continue exploring by moving LEFT from this new anchor.
+      log_printf("[A] IMPROVED-> LEFT from A%d F%d\n", anchorA + 1, anchorF + 1); // We log that, because the last move was good, we are going to continue exploring by moving LEFT from this new anchor.
 
       controller_command_cell(anchorA, anchorF - 1); // We command the motor module to move to the cell one step LEFT of the current anchor position.
       // we can shorten delays if borders are hit since there is only going to remain one path to solution so we wouldnt need to wait for the whole heartbeat delay and just the convergence delay. I just dont think this will happen.
@@ -1097,42 +1108,72 @@ int main(void)
   }
 
   // MODE 2: live communication demo (switch 1)
-  if (get_switch_state(1) == 1)
+if (get_switch_state(1) == 1)
+{
+  displayFillScreen(&g_disp, RGB_BLACK);
+  y = g_fh * 1;
+
+  draw_text(&g_disp, g_fx, x, y, "COMMUNICATION DEMO MODE", RGB_GREEN);
+  y += g_fh;
+
+  // --- PING STATUS LINES (no new functions; reuse boot_ping) ---
+  int y_p1 = y; y += g_fh;
+  int y_p2 = y; y += g_fh;
+  int y_p3 = y; y += g_fh;
+
+  draw_text(&g_disp, g_fx, x, y_p1, "HB @1: pinging...", RGB_WHITE);
+  int hb_ok = boot_ping(HRTBT);
+  clear_text_line(&g_disp, y_p1, g_fh, RGB_BLACK);
+  draw_text(&g_disp, g_fx, x, y_p1, hb_ok ? "HB @1: ALIVE" : "HB @1: MISSING",
+            hb_ok ? RGB_GREEN : RGB_RED);
+
+  draw_text(&g_disp, g_fx, x, y_p2, "CRY @2: pinging...", RGB_WHITE);
+  int cry_ok = boot_ping(CRY);
+  clear_text_line(&g_disp, y_p2, g_fh, RGB_BLACK);
+  draw_text(&g_disp, g_fx, x, y_p2, cry_ok ? "CRY @2: ALIVE" : "CRY @2: MISSING",
+            cry_ok ? RGB_GREEN : RGB_RED);
+
+  draw_text(&g_disp, g_fx, x, y_p3, "MTR @3: pinging...", RGB_WHITE);
+  int mtr_ok = boot_ping(MTR);
+  clear_text_line(&g_disp, y_p3, g_fh, RGB_BLACK);
+  draw_text(&g_disp, g_fx, x, y_p3, mtr_ok ? "MTR @3: ALIVE" : "MTR @3: MISSING",
+            mtr_ok ? RGB_GREEN : RGB_RED);
+
+  // --- HUD lines for live values ---
+  y += g_fh; // spacer
+  int y_live_hb1  = y; y += g_fh;
+  int y_live_cry1 = y; y += g_fh;
+  int y_live_mtr1 = y; y += g_fh;
+
+  uint8_t amp = 0;
+  uint8_t freq = 0;
+  int prev_b0 = 0, prev_b1 = 0, prev_b3 = 0;
+
+  while (get_switch_state(1) == 1)
   {
-
-    draw_text(&g_disp, g_fx, x, y, "COMMUNICATION DEMO MODE", RGB_GREEN);
-    y += g_fh;
-    int y_live_hb1 = y + g_fh;
-    int y_live_cry1 = y + 2 * g_fh;
-    int y_live_mtr1 = y + 3 * g_fh;
-
-    uint8_t amp = 0;
-    uint8_t freq = 0;
-    int prev_b0 = 0, prev_b1 = 0, prev_b3 = 0;
-    
-
-    while (get_switch_state(1) == 1)
+    // Only request if that module responded to ping (keeps demo clean)
+    if (hb_ok)
     {
-
-     
-
       int vhb = request_heartbeat();
-      if (vhb >= 0)
-        last_bpm = (uint8_t)vhb;
+      if (vhb >= 0) last_bpm = (uint8_t)vhb;
+    }
 
+    if (cry_ok)
+    {
       int vcr = request_crying();
-      if (vcr >= 0)
-        last_cry = (uint8_t)vcr;
+      if (vcr >= 0) last_cry = (uint8_t)vcr;
+    }
 
-      int b0 = get_button_state(0);
-      int b1 = get_button_state(1);
-      int b3 = get_button_state(3);
+    int b0 = get_button_state(0);
+    int b1 = get_button_state(1);
+    int b3 = get_button_state(3);
 
-      if (b3 && !prev_b3)
-      {
-        restart_program();
-      }
+    if (b3 && !prev_b3)
+      restart_program();
 
+    // Only command motor if it pinged OK
+    if (mtr_ok)
+    {
       if (b0 && !prev_b0)
       {
         amp = 100;
@@ -1145,45 +1186,46 @@ int main(void)
         freq = 60;
         command_motor(amp, freq);
       }
-      prev_b0 = b0;
-      prev_b1 = b1;
-      prev_b3 = b3;
-
-      clear_text_line(&g_disp, y_live_hb1, g_fh, RGB_BLACK);
-      clear_text_line(&g_disp, y_live_cry1, g_fh, RGB_BLACK);
-      clear_text_line(&g_disp, y_live_mtr1, g_fh, RGB_BLACK);
-
-      char buf[64], num[16];
-
-      strcpy(buf, "[HB] bpm=");
-      itoa_u(last_bpm, num);
-      strcat(buf, num);
-      draw_text(&g_disp, g_fx, x, y_live_hb1, buf, RGB_WHITE);
-
-      strcpy(buf, "[C] cry=");
-      itoa_u(last_cry, num);
-      strcat(buf, num);
-      strcat(buf, "%");
-      draw_text(&g_disp, g_fx, x, y_live_cry1, buf, RGB_WHITE);
-
-      strcpy(buf, "[MOTOR] sent= A:");
-      itoa_u(amp, num);
-      strcat(buf, num);
-      strcat(buf, "%  F:");
-      itoa_u(freq, num);
-      strcat(buf, num);
-      strcat(buf, "%");
-      draw_text(&g_disp, g_fx, x, y_live_mtr1, buf, RGB_WHITE);
-
-      sleep_msec(20);
     }
 
-    display_destroy(&g_disp);
-    switches_destroy();
-    buttons_destroy();
-    pynq_destroy();
-    return EXIT_SUCCESS;
+    prev_b0 = b0;
+    prev_b1 = b1;
+    prev_b3 = b3;
+
+    clear_text_line(&g_disp, y_live_hb1, g_fh, RGB_BLACK);
+    clear_text_line(&g_disp, y_live_cry1, g_fh, RGB_BLACK);
+    clear_text_line(&g_disp, y_live_mtr1, g_fh, RGB_BLACK);
+
+    char buf[64], num[16];
+
+    strcpy(buf, "[HB] bpm=");
+    itoa_u(last_bpm, num);
+    strcat(buf, num);
+    draw_text(&g_disp, g_fx, x, y_live_hb1, buf, RGB_WHITE);
+
+    strcpy(buf, "[C] cry=");
+    itoa_u(last_cry, num);
+    strcat(buf, num);
+    strcat(buf, "%");
+    draw_text(&g_disp, g_fx, x, y_live_cry1, buf, RGB_WHITE);
+
+    strcpy(buf, "[MOTOR] sent= A:");
+    itoa_u(amp, num);
+    strcat(buf, num);
+    strcat(buf, "%  F:");
+    itoa_u(freq, num);
+    strcat(buf, num);
+    strcat(buf, "%");
+    draw_text(&g_disp, g_fx, x, y_live_mtr1, buf, RGB_WHITE);
+
+    sleep_msec(20);
   }
+
+  // IMPORTANT: do NOT destroy and return here.
+  // Switching off SW1 should fall through to MODE 3.
+  displayFillScreen(&g_disp, RGB_BLACK);
+}
+
 
   // MODE 3: REAL DECISION-MAKING MODULE (default)
 
@@ -1259,25 +1301,45 @@ int main(void)
   g_log_y = g_log_y_start;
   g_log_enabled = 1;
 
+  uint32_t last_poll_ms = 0;
+  uint32_t last_step_ms = 0;
   // Main control loop
   while (1)
   {
-    int b3 = get_button_state(3);
-    if (b3)
+    uint32_t now = (uint32_t)now_msec();
+
+    // restart
+    if (get_button_state(3))
       restart_program();
-    // 1) Read latest vitals from heartbeat + crying modules
-    int vhb = request_heartbeat();
-    if (vhb >= 0)
-      last_bpm = (uint8_t)vhb;
 
-    int vcr = request_crying();
-    if (vcr >= 0)
-      last_cry = (uint8_t)vcr;
-
-    // 2) One inverse-model decision step (may send exactly one new motor command)
-    if (mtr_ok)
+    // (1) Poll vitals frequently
+    if ((uint32_t)(now - last_poll_ms) >= VITALS_POLL_MS)
     {
-      controller_step((int)last_bpm, (int)last_cry);
+      last_poll_ms = now;
+
+      int vhb = request_heartbeat();
+      if (vhb >= 0)
+        last_bpm = (uint8_t)vhb;
+
+      int vcr = request_crying();
+      if (vcr >= 0)
+        last_cry = (uint8_t)vcr;
+    }
+
+    // (2) Run controller step on your intended cadence (4s or 10s)
+    int step_period_ms;
+    if (hit_wall)
+      step_period_ms = CONVERGENCE_DELAY;
+    else if (is_crying_activated)
+      step_period_ms = CRYING_DELAY;
+    else
+      step_period_ms = HEARTBEAT_DELAY;
+
+    if ((uint32_t)(now - last_step_ms) >= (uint32_t)step_period_ms)
+    {
+      last_step_ms = now;
+      if (mtr_ok)
+        controller_step((int)last_bpm, (int)last_cry);
     }
 
     // 3) HUD update and clear
