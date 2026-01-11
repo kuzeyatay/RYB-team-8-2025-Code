@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h> // for log_printf
+#include <unistd.h>
 
 #define UART_CH UART0
 #define MSTR 0
@@ -217,54 +218,53 @@ void send_message_raw(uint8_t dst, uint8_t src, const uint8_t payload[], uint8_t
 // UPDATED: Now non-blocking. Returns -1 immediately if no data.
 static int receive_message(void)
 {
-    // 1. Check if ANY data is available. If not, return immediately.
-    //    This prevents the 20ms blocking delay every loop.
-    if (!uart_has_data(UART_CH))
-    {
-        return -1;
-    }
+  // 1. Check if ANY data is available. If not, return immediately.
+  //    This prevents the 20ms blocking delay every loop.
+  if (!uart_has_data(UART_CH))
+  {
+    return -1;
+  }
 
-    // 2. Data is confirmed, so we can now safely use the timeout function
-    //    to read the full frame without stalling the main loop unnecessarily.
-    int b = receive_byte(); // Read DST
+  // 2. Data is confirmed, so we can now safely use the timeout function
+  //    to read the full frame without stalling the main loop unnecessarily.
+  int b = receive_byte(); // Read DST
+  if (b < 0)
+    return -1;
+  uint8_t dst = (uint8_t)b;
+
+  b = receive_byte(); // Read SRC
+  if (b < 0)
+    return -1;
+  uint8_t src = (uint8_t)b;
+
+  b = receive_byte(); // Read LEN
+  if (b < 0)
+    return -1;
+  uint8_t len = (uint8_t)b;
+
+  // Forwarding Logic BUT mstr is eighter the start or end of meesages so it should not forward.
+
+  if (dst != MSTR)
+  {
+    return 0;
+  }
+
+  // --- Receive Logic (For Me) ---
+  if (len > MAX_PAY)
+    len = MAX_PAY; // Safety clamp
+
+  for (int i = 0; i < len; i++)
+  {
+    b = receive_byte();
     if (b < 0)
-        return -1;
-    uint8_t dst = (uint8_t)b;
+      return -3;
+    g_payload[i] = (uint8_t)b;
+  }
 
-    b = receive_byte(); // Read SRC
-    if (b < 0)
-        return -1;
-    uint8_t src = (uint8_t)b;
-
-    b = receive_byte(); // Read LEN
-    if (b < 0)
-        return -1;
-    uint8_t len = (uint8_t)b;
-
-    // Forwarding Logic BUT mstr is eighter the start or end of meesages so it should not forward.
-    
-    if (dst != MSTR)
-    {
-        return 0;
-    }
-
-    // --- Receive Logic (For Me) ---
-    if (len > MAX_PAY)
-        len = MAX_PAY; // Safety clamp
-
-    for (int i = 0; i < len; i++)
-    {
-        b = receive_byte();
-        if (b < 0)
-            return -3;
-        g_payload[i] = (uint8_t)b;
-    }
-
-    g_src = src;
-    g_len = len;
-    return g_len;
+  g_src = src;
+  g_len = len;
+  return g_len;
 }
-
 
 // Ping / random / sensor / motor commands
 
@@ -768,6 +768,22 @@ static void handle_sigint(int sig __attribute__((unused)))
   exit(0);
 }
 
+static void restart_program(void)
+{
+  // Prevent Ctrl+C during restart teardown/exec
+  signal(SIGINT, SIG_IGN);
+
+  // Optional: clear screen as a UX cue (safe to skip if you suspect display code)
+  displayFillScreen(&g_disp, RGB_BLACK);
+
+  // Execute self (argv[0] must be non-NULL)
+  execl("/proc/self/exe", "/proc/self/exe", (char *)NULL);
+
+  // If execl returns, it failed
+  perror("execl failed");
+  _exit(127);
+}
+
 int main(void)
 {
   // init Ctrl+C clean-up
@@ -1083,6 +1099,7 @@ int main(void)
   // MODE 2: live communication demo (switch 1)
   if (get_switch_state(1) == 1)
   {
+
     draw_text(&g_disp, g_fx, x, y, "COMMUNICATION DEMO MODE", RGB_GREEN);
     y += g_fh;
     int y_live_hb1 = y + g_fh;
@@ -1091,10 +1108,14 @@ int main(void)
 
     uint8_t amp = 0;
     uint8_t freq = 0;
-    int prev_b0 = 0, prev_b1 = 0;
+    int prev_b0 = 0, prev_b1 = 0, prev_b3 = 0;
+    
 
     while (get_switch_state(1) == 1)
     {
+
+     
+
       int vhb = request_heartbeat();
       if (vhb >= 0)
         last_bpm = (uint8_t)vhb;
@@ -1105,6 +1126,12 @@ int main(void)
 
       int b0 = get_button_state(0);
       int b1 = get_button_state(1);
+      int b3 = get_button_state(3);
+
+      if (b3 && !prev_b3)
+      {
+        restart_program();
+      }
 
       if (b0 && !prev_b0)
       {
@@ -1120,6 +1147,7 @@ int main(void)
       }
       prev_b0 = b0;
       prev_b1 = b1;
+      prev_b3 = b3;
 
       clear_text_line(&g_disp, y_live_hb1, g_fh, RGB_BLACK);
       clear_text_line(&g_disp, y_live_cry1, g_fh, RGB_BLACK);
@@ -1234,6 +1262,9 @@ int main(void)
   // Main control loop
   while (1)
   {
+    int b3 = get_button_state(3);
+    if (b3)
+      restart_program();
     // 1) Read latest vitals from heartbeat + crying modules
     int vhb = request_heartbeat();
     if (vhb >= 0)
