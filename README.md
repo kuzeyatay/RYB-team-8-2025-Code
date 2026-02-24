@@ -1,6 +1,9 @@
 # RYB-team-8-2025-Code
 # Rock Your Baby — Team 8 (2025) — Final Code
 
+NOTE: Crying isnt working reliably, but other subsystems are.
+
+DONE: We succeeded in making the baby calm in under 3 minutes (it was actually 2 minutes). 
 
 
 ## TODOS:
